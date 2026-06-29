@@ -98,11 +98,13 @@ function requireRuntimeAvailable(res: Response): boolean {
 
 router.get('/api/status', async (_req: Request, res: Response) => {
   const runtime = runtimeStatus.getSummary();
+  const authRequired = process.env.AUTH_REQUIRED === 'true';
   try {
     const pool = BrowserPool.getInstance();
     const windows = pool.listWindows();
     res.json({
       alive: true,
+      authRequired,
       runtime: runtime.runtime,
       runtimeError: runtime.runtimeError,
       total: windows.length,
@@ -122,6 +124,7 @@ router.get('/api/status', async (_req: Request, res: Response) => {
     // BrowserPool 不可用也返回 alive=true，runtime 状态显示 unavailable
     res.json({
       alive: true,
+      authRequired,
       runtime: runtime.runtime,
       runtimeError: runtime.runtimeError,
       total: 0,

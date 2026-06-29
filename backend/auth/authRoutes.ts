@@ -68,15 +68,28 @@ authRouter.post('/api/auth/login', async (req: Request, res: Response) => {
  * GET /api/auth/me
  * 返回当前登录用户信息（必须 Bearer JWT）
  */
-authRouter.get('/api/auth/me', (req: Request, res: Response) => {
+authRouter.get('/api/auth/me', async (req: Request, res: Response) => {
   if (!req.principal || req.principal.type !== 'user') {
     return res.status(401).json({ error: '请先登录' });
+  }
+
+  // Phase 3-E: 从数据库查询用户名
+  let username = '';
+  try {
+    const pg = PgDatabase.getInstance();
+    const user = await pg.getUserById(req.principal.tenantId, req.principal.userId);
+    if (user) {
+      username = user.username;
+    }
+  } catch {
+    // 静默失败，username 为空不影响核心功能
   }
 
   return res.json({
     id: req.principal.userId,
     tenantId: req.principal.tenantId,
     role: req.principal.role,
+    username,
   });
 });
 

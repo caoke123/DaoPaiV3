@@ -121,6 +121,7 @@ export type BrowserRuntimeStatus = 'available' | 'unavailable' | 'degraded';
 
 export interface RuntimeStatusResponse {
   alive: boolean;
+  authRequired?: boolean;
   runtime: BrowserRuntimeStatus;
   runtimeError: string | null;
   total: number;

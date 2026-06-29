@@ -140,6 +140,7 @@ describe('Auth Routes', () => {
       id: 'user-1',
       tenantId: 'tenant-custom',
       role: 'operator',
+      username: '',
     });
   });
 

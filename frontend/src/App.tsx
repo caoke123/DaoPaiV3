@@ -12,6 +12,7 @@ import IntegratedPage from './pages/IntegratedPage';
 import SignPage from './pages/SignPage';
 import TasksPage from './pages/TasksPage';
 import SettingsPage from './pages/SettingsPage';
+import CloudOverviewPage from './pages/CloudOverviewPage';
 
 /** 内部组件：设置 onAuthFailure 导航（需在 Router 内使用 useNavigate） */
 function AuthFailureHandler() {
@@ -52,6 +53,7 @@ export default function App() {
           <Route path="/sign" element={<SignPage />} />
           <Route path="/tasks" element={<TasksPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/cloud" element={<CloudOverviewPage />} />
         </Route>
       </Routes>
     </>

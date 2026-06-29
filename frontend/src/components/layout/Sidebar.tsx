@@ -3,13 +3,13 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   PackageOpen, Truck, ClipboardCheck, LayoutList, Settings, Combine,
-  ChevronLeft, ChevronRight,
+  ChevronLeft, ChevronRight, Cloud,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { NAV_ITEMS } from '../../lib/mock-data';
 
 const iconMap: Record<string, React.ElementType> = {
-  PackageOpen, Truck, ClipboardCheck, LayoutList, Settings, Combine,
+  PackageOpen, Truck, ClipboardCheck, LayoutList, Settings, Combine, Cloud,
 };
 
 interface Props {
