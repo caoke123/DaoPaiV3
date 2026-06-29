@@ -11,7 +11,7 @@
 DaoPai Local Agent 是安装在员工电脑上的本地执行端：
 
 - Agent **只负责当前电脑的本地执行能力**。
-- Agent **不负责**：租户管理、会员管理、云端任务中心 UI、跨设备调度。
+- Agent **不负责**：租户管理、SaaS 会员授权管理、云端任务中心 UI、跨设备调度。
 - Agent **不存储**：云端业务数据副本（除本地临时日志和必要缓存外）。
 - Agent **不直接暴露**：本地浏览器端口给云端。
 
@@ -25,7 +25,9 @@ Agent 是 V3 SaaS 架构中"执行层"的唯一入口，所有浏览器自动化
 DaoPaiAgent/
   ├─ agent/                  # Agent 主程序代码
   ├─ runtime/
-  │   └─ browser/            # Playwright 浏览器运行时数据
+  │   └─ browser/
+  │       ├─ chrome-for-testing/   # 固定浏览器运行包（推荐）
+  │       └─ user-data/            # 浏览器用户数据目录（会话保持）
   ├─ config/
   │   └─ agent.json          # 本地配置
   ├─ logs/                   # 本地日志（最近 N 天）
@@ -37,6 +39,7 @@ DaoPaiAgent/
 
 - `agent/` 是 Agent 主程序，由云端打包发布，员工电脑解压即用。
 - `runtime/browser/` 存放 Playwright 浏览器二进制和用户数据目录。
+- **`runtime/browser/chrome-for-testing/` 推荐使用固定浏览器运行包**（Chrome for Testing 或随 Agent 打包的 browser runtime），避免依赖员工电脑已安装 Chrome，也避免现场无外网时无法初始化。
 - `config/agent.json` 是唯一配置入口，包含连接信息和身份信息。
 - `logs/` 本地滚动保留，避免无限增长。
 - `screenshots/` 仅调试模式启用，正常生产为空。
@@ -68,7 +71,7 @@ DaoPaiAgent/
 - `cloudApiUrl`：云端 API 基地址。
 - `tenantId` / `siteId` / `workstationId`：Agent 身份三元组，首次绑定时由云端颁发。
 - `workstationName`：本地显示名称，便于运维识别。
-- `agentToken`：Agent 鉴权 Token，长期有效，可由云端撤销。
+- `agentToken`：Agent 鉴权 Token，长期有效，**可由云端撤销和重新生成**。Agent 检测到 token 失效后，应停止领取任务并进入等待重新绑定状态，等待管理员重新下发配置。
 - `screenshotEnabled`：截图开关，默认 `false`。
 - `pollIntervalMs`：任务轮询间隔，默认 5 秒。
 - `heartbeatIntervalMs`：心跳上报间隔，默认 15 秒。
@@ -88,16 +91,18 @@ Agent 启动后依次执行以下检查，任一失败则进入"降级模式"并
 
 1. **是否能连接云端**：HTTP 探测 `cloudApiUrl/health`。
 2. **Token 是否有效**：调用 `GET /agent/me` 验证 `agentToken`。
-3. **设备是否授权**：云端返回 workstation 状态必须为 `active`。
-4. **浏览器环境是否存在**：检查 Playwright 浏览器是否已安装、可启动。
+3. **设备是否授权**：云端返回 `workstation.status` 必须为 `active`。
+4. **浏览器环境是否存在**：检查固定浏览器包（Chrome for Testing 或随 Agent 打包的 browser runtime）是否就绪、是否可启动。
 5. **本地配置是否完整**：`agent.json` 字段齐全且非空。
 6. **本地窗口配置 / settings.json 是否可读取**：检查本地业务配置文件可访问。
 
 检查失败处理：
 
 - 网络/Token/授权类失败：进入等待重试，不上报无效心跳。
-- 浏览器环境失败：上报 `workstation_status=browser_missing`，云端标记不可分配任务。
+- 浏览器环境失败：上报 `browser_status=browser_missing`（或 `degraded` / `unknown`）到云端，云端标记该 workstation 不可分配新任务。
 - 配置缺失：本地报错并退出，提示用户重新初始化。
+
+**浏览器环境检测结果上报**：Agent 启动检查阶段必须将浏览器环境检测结果上报到云端 `workstation.browser_status`，取值包括 `ready` / `browser_missing` / `degraded` / `unknown`。云端结合 `status` / `online_status` / `browser_status` 三个维度判断是否分配新任务。
 
 ---
 
@@ -167,7 +172,7 @@ Agent 截图策略与云端保持一致：
 
 ## 8. 与 V2 执行能力的关系
 
-- V3 Local Agent 复用 V2 已稳定的浏览器自动化执行内核（Playwright 操作、窗口复用、会员会话保持）。
+- V3 Local Agent 复用 V2 已稳定的浏览器自动化执行内核（Playwright 操作、窗口复用、笨鸟业务会话保持 / 浏览器用户数据保持 / 网点账号会话保持）。
 - V3 不修改 V2 代码，V2 继续独立运行。
 - V3 Local Agent 是独立程序，不与 V2 共享进程、配置、端口。
 - V3 Local Agent 的执行内核可从 V2 抽取重构，但抽取过程不破坏 V2 运行链路。

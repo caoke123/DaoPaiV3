@@ -86,19 +86,29 @@ tenant.status:
 1. 超级管理员在云端后台为租户创建 `workstation` 记录（生成 `workstationId` + `agentToken`）。
 2. 将 `agent.json` 配置（含 `tenantId` / `siteId` / `workstationId` / `agentToken`）下发给员工电脑。
 3. Agent 首次启动，使用 `agentToken` 调用 `POST /agent/register` 完成首次注册。
-4. 云端记录 `workstation.status = active`、`last_heartbeat_at`。
+4. 云端记录 `workstation.status = active`，`online_status` 根据心跳更新，`last_heartbeat_at` 记录最后心跳时间。
 
 ### 4.2 在线状态
 
 - Agent 周期性上报心跳到 `agent_heartbeats` 表。
-- 云端定时任务扫描，超过阈值（如 60 秒）未上报则标记 `offline`。
-- `workstation.status` 字段：`active` / `disabled` / `offline`（在线状态由心跳推导）。
+- 云端定时任务扫描，超过阈值（如 60 秒）未上报则将 `workstation.online_status` 标记为 `offline`。
+- `workstation.status` = `active` / `disabled`（授权状态，管理员手动控制）。
+- `workstation.online_status` = `online` / `offline` / `error`（在线状态，由心跳推导）。
+- `workstation.browser_status` = `ready` / `browser_missing` / `degraded` / `unknown`（浏览器环境状态，由 Agent 上报）。
+
+**关键说明**：
+
+- **在线/离线不是授权状态**：`offline` 只是临时在线状态，不应混入 `workstation.status`。
+- **授权状态由 `workstation.status` 表示**：管理员开通 / 停用设备。
+- **在线状态由 `online_status` + `last_heartbeat_at` 推导**：心跳超时即变 `offline`，恢复心跳即变 `online`。
+- **浏览器是否可执行由 `browser_status` 表示**：由 Agent 启动检查和环境检测上报。
 
 ### 4.3 授权状态
 
-- `workstation.status = active`：可领取新任务。
-- `workstation.status = disabled`：不可领取新任务，已分配任务可继续完成或回收。
-- `agentToken` 可由云端撤销，撤销后 Agent 鉴权失败，进入等待重试。
+- `workstation.status = active`：设备已授权，**结合 `online_status` 和 `browser_status` 判断是否可领取新任务**。
+- `workstation.status = disabled`：管理员禁用设备，不可领取新任务，已分配任务可继续完成或回收。
+- **`disabled` 表示管理员禁用设备，不等同于 `offline`**。`offline` 是心跳超时推导出来的临时在线状态，授权状态仍为 `active`。
+- `agentToken` 可由云端**撤销和重新生成**，撤销后 Agent 鉴权失败，进入等待重新绑定状态。
 
 ### 4.4 解绑与迁移
 
@@ -134,6 +144,15 @@ cancelled  已取消
 - Agent 通过 `POST /agent/tasks/claim` 领取任务。
 - 云端使用原子操作（`SELECT ... FOR UPDATE SKIP LOCKED` 或乐观锁）分配任务。
 - 领取后状态变为 `assigned`，记录 `workstation_id` 和 `assigned_at`。
+
+**领取前置条件**：只有同时满足以下条件的 workstation 才能领取新任务：
+
+- `tenant.status = active`（租户已开通且未到期/停用）
+- `workstation.status = active`（设备已授权）
+- `workstation.online_status = online`（设备在线）
+- `workstation.browser_status = ready` 或其它可执行状态（浏览器环境就绪）
+
+任一条件不满足时，云端拒绝领取请求并返回相应错误码（403 无权限 / 409 状态冲突）。
 
 ### 5.4 结果回传
 
