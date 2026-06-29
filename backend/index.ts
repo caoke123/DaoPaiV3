@@ -300,7 +300,11 @@ async function main(): Promise<void> {
           console.log(`[启动] 已同步 ${cfg.sites.length} 个网点到 PG sites 表`);
         }
 
-        // 4. Phase 2-C-1: 僵尸任务恢复（PG 已就绪，优先写 PG）
+        // 4. Phase 2-D: 确保默认工作站存在（migration 002 已插入，此处做运行时验证）
+        const wsReady = await pg.ensureDefaultWorkstation();
+        console.log(`[启动] 默认工作站 ws-local-default ${wsReady ? '已就绪' : '未找到（请检查 migration 002）'}`);
+
+        // 5. Phase 2-C-1: 僵尸任务恢复（PG 已就绪，优先写 PG）
         const recovered = await AssignmentEngine.recoverRunningTasks();
         if (recovered > 0) {
           console.log(`[启动] 僵尸任务恢复完成: ${recovered} 个任务 running → failed`);

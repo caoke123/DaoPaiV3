@@ -158,6 +158,8 @@ export interface TaskLogEntry {
   staffName?: string;
   /** 结构化窗口追踪：窗口 ID */
   windowId?: string;
+  /** Phase 2-D: 产生该日志的工作站 ID */
+  workstationId?: string;
 }
 
 // ══════════════════════════════════════════════════════════════

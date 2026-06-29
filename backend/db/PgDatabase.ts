@@ -33,6 +33,9 @@ import type { WaybillResult, TaskLogEntry } from '../types/api-contracts';
  */
 export const DEFAULT_TENANT_ID = 'tenant-default';
 
+/** Phase 2-D: 默认本机工作站 ID（Agent 未拆分前统一使用） */
+export const DEFAULT_WORKSTATION_ID = 'ws-local-default';
+
 // ── 连接配置 ──────────────────────────────────────────
 
 export interface PgConfig {
@@ -66,7 +69,8 @@ export interface InsertTaskParams {
   doneCount?: number;
   failCount?: number;
   inputData?: Record<string, unknown>;
-  tenantId?: string; // Phase 2-B: 不传则用 DEFAULT_TENANT_ID
+  tenantId?: string;       // Phase 2-B: 不传则用 DEFAULT_TENANT_ID
+  workstationId?: string;  // Phase 2-D: 不传则用 DEFAULT_WORKSTATION_ID
 }
 
 // ── PgDatabase 类 ─────────────────────────────────────
@@ -197,14 +201,15 @@ export class PgDatabase {
    */
   async insertTask(task: InsertTaskParams): Promise<string> {
     const tenantId = task.tenantId || DEFAULT_TENANT_ID;
+    const workstationId = task.workstationId || DEFAULT_WORKSTATION_ID;
     const hasId = !!task.id;
     const result = await this.pool.query<{ id: string }>(
       hasId
-        ? `INSERT INTO tasks (id, type, site_id, status, total_count, done_count, fail_count, input_data, tenant_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ? `INSERT INTO tasks (id, type, site_id, status, total_count, done_count, fail_count, input_data, tenant_id, workstation_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
            RETURNING id`
-        : `INSERT INTO tasks (type, site_id, status, total_count, done_count, fail_count, input_data, tenant_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        : `INSERT INTO tasks (type, site_id, status, total_count, done_count, fail_count, input_data, tenant_id, workstation_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
            RETURNING id`,
       hasId
         ? [
@@ -217,6 +222,7 @@ export class PgDatabase {
             task.failCount || 0,
             task.inputData ? JSON.stringify(task.inputData) : null,
             tenantId,
+            workstationId,
           ]
         : [
             task.type,
@@ -227,6 +233,7 @@ export class PgDatabase {
             task.failCount || 0,
             task.inputData ? JSON.stringify(task.inputData) : null,
             tenantId,
+            workstationId,
           ]
     );
 
@@ -373,7 +380,7 @@ export class PgDatabase {
 
     const [dataResult, countResult] = await Promise.all([
       this.pool.query(
-        `SELECT t.id, t.type, t.site_id, s.name AS site_name, t.status, t.total_count, t.done_count, t.fail_count, t.input_data, t.created_at, t.finished_at,
+        `SELECT t.id, t.type, t.site_id, s.name AS site_name, t.status, t.total_count, t.done_count, t.fail_count, t.input_data, t.created_at, t.finished_at, t.workstation_id,
                 COALESCE(ws.staff_cnt, 0) AS staff_count
          FROM tasks t
          LEFT JOIN sites s ON s.id = t.site_id
@@ -410,6 +417,7 @@ export class PgDatabase {
         ? (row.finished_at instanceof Date ? row.finished_at.toISOString() : String(row.finished_at))
         : null,
       staffCount: row.staff_count,
+      workstationId: row.workstation_id || undefined,
     }));
 
     return { tasks, total: parseInt(countResult.rows[0].cnt, 10) };
@@ -893,16 +901,17 @@ export class PgDatabase {
   ): Promise<void> {
     if (logs.length === 0) return;
 
-    // Phase 2-B: 通过第一条日志的 task_id 查询 tasks.site_id（同批次日志通常属于同一任务）
+    // Phase 2-B: 通过第一条日志的 task_id 查询 tasks.site_id 和 workstation_id
     const firstTaskId = logs[0]?.taskId;
-    const taskRow = await this.pool.query<{ site_id: string | null }>(
-      `SELECT site_id FROM tasks WHERE id = $1 AND tenant_id = $2`,
+    const taskRow = await this.pool.query<{ site_id: string | null; workstation_id: string | null }>(
+      `SELECT site_id, workstation_id FROM tasks WHERE id = $1 AND tenant_id = $2`,
       [firstTaskId, tenantId]
     );
     const siteId = taskRow.rows.length > 0 ? taskRow.rows[0].site_id : null;
+    const workstationId = taskRow.rows.length > 0 ? (taskRow.rows[0].workstation_id || DEFAULT_WORKSTATION_ID) : DEFAULT_WORKSTATION_ID;
 
-    // Phase 2-B: 每行 9 个字段（原 7 个 + tenant_id + site_id）
-    const columnCount = 9;
+    // Phase 2-D: 每行 10 个字段（原 9 个 + workstation_id）
+    const columnCount = 10;
     const values: unknown[] = [];
     const rows: string[] = [];
 
@@ -917,14 +926,15 @@ export class PgDatabase {
         log.source,
         log.staffName || null,
         log.windowId || null,
-        tenantId,    // tenant_id
-        siteId       // site_id (可空)
+        tenantId,          // tenant_id
+        siteId,            // site_id (可空)
+        workstationId      // workstation_id (Phase 2-D)
       );
-      rows.push(`(gen_random_uuid(), $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9})`);
+      rows.push(`(gen_random_uuid(), $${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10})`);
     }
 
     await this.pool.query(
-      `INSERT INTO task_logs (id, task_id, timestamp, level, message, source, staff_name, window_id, tenant_id, site_id)
+      `INSERT INTO task_logs (id, task_id, timestamp, level, message, source, staff_name, window_id, tenant_id, site_id, workstation_id)
        VALUES ${rows.join(', ')}`,
       values
     );
@@ -950,7 +960,7 @@ export class PgDatabase {
   ): Promise<{ logs: TaskLogEntry[]; total: number }> {
     const [dataResult, countResult] = await Promise.all([
       this.pool.query(
-        `SELECT id, task_id, timestamp, level, message, source, staff_name, window_id
+        `SELECT id, task_id, timestamp, level, message, source, staff_name, window_id, workstation_id
          FROM task_logs
          WHERE task_id = $1 AND tenant_id = $2
          ORDER BY timestamp DESC
@@ -972,6 +982,7 @@ export class PgDatabase {
       source: row.source,
       staffName: row.staff_name || undefined,
       windowId: row.window_id || undefined,
+      workstationId: row.workstation_id || undefined,
     }));
 
     return { logs, total: parseInt(countResult.rows[0].cnt, 10) };
@@ -1069,11 +1080,12 @@ export class PgDatabase {
     partialCount: number;
     failedCount: number;
     unknownCount: number;
+    workstationId?: string;
   } | null> {
     // Phase 2-B: task_id 查询同时校验 tenant_id
     const [taskResult, statsResult] = await Promise.all([
       this.pool.query(
-        `SELECT id, type, site_id, status, total_count, done_count, fail_count, created_at, finished_at
+        `SELECT id, type, site_id, status, total_count, done_count, fail_count, created_at, finished_at, workstation_id
          FROM tasks WHERE id = $1 AND tenant_id = $2`,
         [taskId, tenantId]
       ),
@@ -1113,6 +1125,7 @@ export class PgDatabase {
       partialCount: countMap.PARTIAL || 0,
       failedCount: countMap.FAILED || 0,
       unknownCount: countMap.UNKNOWN || 0,
+      workstationId: t.workstation_id || undefined,
     };
   }
 
@@ -1273,6 +1286,63 @@ export class PgDatabase {
   // ══════════════════════════════════════════════════════════
   // 生命周期
   // ══════════════════════════════════════════════════════════
+
+  // ══════════════════════════════════════════════════════════
+  // 10. workstations 基础查询（Phase 2-D）
+  // ══════════════════════════════════════════════════════════
+
+  /**
+   * 确保默认工作站存在（幂等，启动时调用）
+   *
+   * 如有需要，写入默认 workstation 配置。
+   * 实际插入由 migration 002 保证，此方法仅做运行时验证。
+   */
+  async ensureDefaultWorkstation(tenantId: string = DEFAULT_TENANT_ID): Promise<boolean> {
+    const result = await this.pool.query<{ id: string }>(
+      `SELECT id FROM workstations
+       WHERE id = $1 AND tenant_id = $2`,
+      [DEFAULT_WORKSTATION_ID, tenantId]
+    );
+    return result.rows.length > 0;
+  }
+
+  /**
+   * 查询指定工作站信息
+   *
+   * @param tenantId      租户 ID
+   * @param workstationId 工作站 ID
+   * @returns 工作站信息或 null
+   */
+  async getWorkstationById(
+    tenantId: string = DEFAULT_TENANT_ID,
+    workstationId: string
+  ): Promise<{
+    id: string;
+    tenantId: string;
+    name: string;
+    status: string;
+    onlineStatus: string;
+    browserStatus: string;
+    siteId: string | null;
+  } | null> {
+    const result = await this.pool.query(
+      `SELECT id, tenant_id, name, status, online_status, browser_status, site_id
+       FROM workstations
+       WHERE id = $1 AND tenant_id = $2`,
+      [workstationId, tenantId]
+    );
+    if (result.rows.length === 0) return null;
+    const row = result.rows[0] as any;
+    return {
+      id: row.id,
+      tenantId: row.tenant_id,
+      name: row.name,
+      status: row.status,
+      onlineStatus: row.online_status,
+      browserStatus: row.browser_status,
+      siteId: row.site_id,
+    };
+  }
 
   /** 释放连接池（在应用停机时调用） */
   async close(): Promise<void> {
