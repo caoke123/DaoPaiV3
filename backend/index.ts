@@ -38,6 +38,7 @@ import { SessionManager } from './browser/SessionManager';
 import { WindowLockManager } from './browser/WindowLockManager';
 import { Database } from './db/Database';
 import { PgDatabase } from './db/PgDatabase';
+import { runMigrations } from './db/migrations';
 import { SettingsManager } from './config/SettingsManager';
 import { AssignmentEngine } from './modules/assignment-engine/AssignmentEngine';
 import { EasyBRClient } from './easybr/EasyBRClient';
@@ -270,19 +271,34 @@ async function main(): Promise<void> {
     console.log(`\n[启动] Express 服务已启动: http://localhost:${PORT}`);
     console.log('[启动] 前端开发模式请另行启动 vite dev（cd frontend && npm run dev）\n');
 
-    // 启动时把 settings.json 中的网点 id/name 同步到 PG sites 表
-    // （历史 migrate 脚本把 siteId 当 name 写入，导致任务列表 JOIN 拿不到 "天南大" 这种显示名）
+    // 启动时执行数据库初始化 + migration + 网点同步
+    // Phase 2-B: 新增 migration 执行步骤
     (async () => {
       try {
+        const pg = PgDatabase.getInstance();
+
+        // 1. 执行 init-schema.sql（幂等，CREATE IF NOT EXISTS）
+        await pg.init();
+
+        // 2. 执行 migrations（Phase 2-B: 多租户基础）
+        try {
+          const result = await runMigrations(pg.getPool());
+          if (result.applied.length > 0) {
+            console.log(`[启动] Migration 已应用: ${result.applied.join(', ')}`);
+          }
+        } catch (migErr) {
+          console.warn('[启动] Migration 执行失败（不影响启动，但多租户列可能缺失）:', (migErr as Error).message);
+        }
+
+        // 3. 同步 settings.json 中的网点 id/name 到 PG sites 表
         const sm = SettingsManager.getInstance();
         const cfg = await sm.getConfig();
         if (cfg.sites.length > 0) {
-          const pg = PgDatabase.getInstance();
           await pg.syncSitesFromSettings(cfg.sites);
           console.log(`[启动] 已同步 ${cfg.sites.length} 个网点到 PG sites 表`);
         }
       } catch (e) {
-        console.warn('[启动] 同步网点到 PG 失败（不影响启动）:', (e as Error).message);
+        console.warn('[启动] PG 初始化失败（不影响启动，JSON 模式仍可用）:', (e as Error).message);
       }
     })();
   });

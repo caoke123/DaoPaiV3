@@ -9,7 +9,7 @@ import { taskEventBus, type TaskEvent } from '../utils/TaskEventBus';
 import { RuntimeMetrics } from '../runtime/RuntimeMetrics';
 import { SettingsManager } from '../config/SettingsManager';
 import { isLoginCapableWindow } from '../config/SettingsManager';
-import { PgDatabase } from '../db/PgDatabase';
+import { PgDatabase, DEFAULT_TENANT_ID } from '../db/PgDatabase';
 // Phase D-1: 统一任务执行引擎
 import { AssignmentEngine, ArrivalHandler, DispatchHandler, IntegratedHandler, SignHandler, InitWindowHandler, type Assignment } from '../modules/assignment-engine';
 // 类型仅用于请求体校验（业务执行已交给 Engine）
@@ -1519,7 +1519,7 @@ router.get('/api/tasks/:id/logs', async (req: Request, res: Response) => {
     const offset = parseInt(req.query.offset as string) || 0;
 
     const pgDb = PgDatabase.getInstance();
-    const result = await pgDb.getTaskLogs(id, limit, offset);
+    const result = await pgDb.getTaskLogs(DEFAULT_TENANT_ID, id, limit, offset);
 
     res.json({ taskId: id, logs: result.logs, total: result.total });
   } catch (e) {
@@ -1536,7 +1536,7 @@ router.get('/api/tasks/:id/waybills', async (req: Request, res: Response) => {
     const staffFilter = req.query.staffName as string | undefined;
 
     const pgDb = PgDatabase.getInstance();
-    const result = await pgDb.getTaskWaybills(id, statusFilter, staffFilter);
+    const result = await pgDb.getTaskWaybills(DEFAULT_TENANT_ID, id, statusFilter, staffFilter);
 
     res.json({ taskId: id, waybills: result.waybills, total: result.total });
   } catch (e) {
@@ -1551,7 +1551,7 @@ router.get('/api/tasks/:id/staff', async (req: Request, res: Response) => {
     const { id } = req.params;
 
     const pgDb = PgDatabase.getInstance();
-    const workers = await pgDb.getTaskStaffSummary(id);
+    const workers = await pgDb.getTaskStaffSummary(DEFAULT_TENANT_ID, id);
 
     res.json({ taskId: id, workers });
   } catch (e) {
@@ -1566,7 +1566,7 @@ router.get('/api/tasks/:id/summary', async (req: Request, res: Response) => {
     const { id } = req.params;
 
     const pgDb = PgDatabase.getInstance();
-    const summary = await pgDb.getTaskSummary(id);
+    const summary = await pgDb.getTaskSummary(DEFAULT_TENANT_ID, id);
 
     if (!summary) {
       return res.status(404).json({ error: '任务不存在' });
@@ -1584,7 +1584,7 @@ router.post('/api/tasks/cleanup', async (req: Request, res: Response) => {
   try {
     const days = (req.body?.days && typeof req.body.days === 'number') ? req.body.days : 30;
     const pgDb = PgDatabase.getInstance();
-    const result = await pgDb.cleanupOldTasks(days);
+    const result = await pgDb.cleanupOldTasks(DEFAULT_TENANT_ID, days);
     res.json(result);
   } catch (e) {
     console.error('[POST /api/tasks/cleanup] 失败:', (e as Error).message);
@@ -1659,7 +1659,7 @@ router.post('/api/tasks/delete-stats', async (req: Request, res: Response) => {
       return res.json({ taskCount: 0, waybillCount: 0, logCount: 0, typeBreakdown: {} });
     }
     const pgDb = PgDatabase.getInstance();
-    const stats = await pgDb.countTaskDeleteStats(taskIds);
+    const stats = await pgDb.countTaskDeleteStats(DEFAULT_TENANT_ID, taskIds);
     res.json(stats);
   } catch (e) {
     console.error('[POST /api/tasks/delete-stats] 失败:', (e as Error).message);
@@ -1675,7 +1675,7 @@ router.post('/api/tasks/batch-delete', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'taskIds 不能为空' });
     }
     const pgDb = PgDatabase.getInstance();
-    const result = await pgDb.deleteTasks(taskIds);
+    const result = await pgDb.deleteTasks(DEFAULT_TENANT_ID, taskIds);
     res.json(result);
   } catch (e) {
     console.error('[POST /api/tasks/batch-delete] 失败:', (e as Error).message);
@@ -1804,7 +1804,7 @@ router.get('/api/operations', async (req: Request, res: Response) => {
       // 设置未初始化时不影响任务列表展示
     }
 
-    const result = await pg.getTaskList(page, limit, filterType, status, filterSearch);
+    const result = await pg.getTaskList(DEFAULT_TENANT_ID, page, limit, filterType, status, filterSearch);
 
     const tasks = result.tasks.map((t) => ({
       ...t,
