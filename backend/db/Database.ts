@@ -8,6 +8,21 @@
 //   - 新增 appendTaskResults / getTaskResults 方法
 //   - IO 异常隔离：写入失败仅记日志，不崩溃
 //   - 容错读取：JSON.parse 失败跳过坏行，继续读后续行
+//
+// ⚠️ Phase 2-C 降级说明（任务主链路 PG 单写收敛）
+//   本模块自 Phase 2-C 起从任务主链路降级为 legacy / fallback / 非主数据源：
+//   - 任务创建：routes.ts 以 pgDb.insertTask 为 PRIMARY（失败→500），
+//     db.createTask 仅作为 legacy mirror（best-effort try/catch）。
+//   - 任务状态/计数：AssignmentEngine 以 pgDb.updateTaskStatus 为 PRIMARY（await），
+//     db.updateTask 仅作为 legacy mirror。
+//   - 任务日志：Engine 通过 pgDb.insertTaskLogs 为 PRIMARY，
+//     taskLogManager.addLog 仅作为 legacy mirror。
+//   - 运单结果：Engine 通过 pgDb.insertWaybillResults / upsertWaybillPool 为 PRIMARY，
+//     db.appendTaskResults 仅作为 legacy mirror。
+//   - 任务中心读取：统一走 PgDatabase（getTaskList / getTaskStats / getTaskLogs / getTaskWaybills），
+//     不回退读取 JSON/SQLite。
+//   本模块仍保留用于：窗口缓存（WindowInfo）、设置中心兼容、离线开发降级。
+//   任务主链路不得依赖本模块写入成功；JSON/SQLite 写入失败不得掩盖 PG 写入失败。
 import path from 'path';
 import fs from 'fs-extra';
 import { v4 as uuidv4 } from 'uuid';
@@ -285,10 +300,11 @@ export class Database {
 
   /**
    * 创建新任务（Step2 规格方法）
-   * @param t 任务数据（不含 id 和 created_at）
+   * Phase 2-C: 允许传入预生成的 id（用于 PG 主写 + JSON mirror 共用同一 taskId）
+   * @param t 任务数据（id 可选，created_at 自动生成）
    * @returns 任务 ID
    */
-  createTask(t: Omit<Task, 'id' | 'created_at'>): string;
+  createTask(t: Omit<Task, 'id' | 'created_at'> & { id?: string }): string;
   /**
    * 创建新任务（向后兼容方法）
    * 传入完整 TaskRecord 时直接存储

@@ -1,5 +1,11 @@
 // Express API 路由定义
 // 提供窗口状态查询、任务提交、任务进度查询等接口
+//
+// Phase 2-C: 任务主链路 PG 单写收敛
+//   - 任务创建以 pgDb.insertTask 为 PRIMARY（失败 → 500）
+//   - db.createTask 降级为 legacy mirror（best-effort try/catch）
+//   - 移除 fire-and-forget PG 写法
+import { randomUUID } from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import { BrowserPool } from '../browser/BrowserPool';
 import { Database, type Site, type TaskType } from '../db/Database';
@@ -220,6 +226,7 @@ router.post('/api/windows/init', async (req: Request, res: Response) => {
 
     // 获取窗口信息（从数据库查找名称/员工）
     const db = Database.getInstance();
+    const pg = PgDatabase.getInstance();
     const allWindows = db.listWindows();
     const win = allWindows.find(w => w.id === window_id);
     const staffName = win?.staff_name || window_id;
@@ -228,16 +235,40 @@ router.post('/api/windows/init', async (req: Request, res: Response) => {
     const _config = await SettingsManager.getInstance().getConfig();
     const siteCode = normalizeSiteToCode(site_id, _config, 'init_window');
 
-    // 创建任务（类型: init_window）
-    const taskId = db.createTask({
-      type: 'init_window' as TaskType,
-      site: siteCode,
-      status: 'pending',
-      total_count: 1,
-      done_count: 0,
-      fail_count: 0,
-      input_data: JSON.stringify({ window_id, window_name: win?.name || window_id, site_id }),
-    });
+    // Phase 2-C: PG 主写 — 预生成 UUID，先写 PG（PRIMARY），失败直接 500
+    const taskId = randomUUID();
+    const inputData = { window_id, window_name: win?.name || window_id, site_id };
+    try {
+      await pg.insertTask({
+        id: taskId,
+        type: 'init_window',
+        siteId: siteCode,
+        status: 'pending',
+        totalCount: 1,
+        doneCount: 0,
+        failCount: 0,
+        inputData,
+      });
+    } catch (e) {
+      console.error('[PG] insertTask init_window failed:', (e as Error).message);
+      return res.status(500).json({ error: `任务创建失败（PG写入异常）: ${(e as Error).message}` });
+    }
+
+    // LEGACY MIRROR: db.createTask（best-effort，不得掩盖 PG 失败）
+    try {
+      db.createTask({
+        id: taskId,
+        type: 'init_window' as TaskType,
+        site: siteCode,
+        status: 'pending',
+        total_count: 1,
+        done_count: 0,
+        fail_count: 0,
+        input_data: JSON.stringify(inputData),
+      });
+    } catch (e) {
+      console.warn('[DB] createTask legacy mirror failed (init_window, non-blocking):', (e as Error).message);
+    }
 
     taskLogManager.addLog(taskId, 'info',
       `窗口初始化任务已创建: site=${site_id}, window=${win?.name || window_id}`,
@@ -879,6 +910,7 @@ async function validateAssignmentsBelongToSite(
  */
 router.post('/api/operations/arrive', async (req: Request, res: Response) => {
   const db = Database.getInstance();
+  const pg = PgDatabase.getInstance();
 
   // 1. 请求体校验
   const { site, assignments, waybillNos } = req.body as {
@@ -930,15 +962,41 @@ router.post('/api/operations/arrive', async (req: Request, res: Response) => {
   // ★ 交付前加固：site 字段统一存 siteCode（如 'tiannanda'），与 PG 一致
   //   旧实现存 raw site.id（如 'site-1782121346155'），导致 SQLite 与 PG 不一致
   const siteCode = normalizeSiteToCode(site, _config, 'arrival');
-  const taskId = db.createTask({
-    type: 'arrive',
-    site: siteCode,
-    status: 'pending',
-    total_count: totalCount,
-    done_count: 0,
-    fail_count: 0,
-    input_data: JSON.stringify(finalAssignments.length > 0 ? { assignments } : { waybillNos }),
-  });
+
+  // Phase 2-C: PG 主写 — 预生成 UUID，先写 PG（PRIMARY），失败直接 500
+  const taskId = randomUUID();
+  const inputData = finalAssignments.length > 0 ? { assignments } : { waybillNos };
+  try {
+    await pg.insertTask({
+      id: taskId,
+      type: 'arrive',
+      siteId: siteCode,
+      status: 'pending',
+      totalCount,
+      doneCount: 0,
+      failCount: 0,
+      inputData,
+    });
+  } catch (e) {
+    console.error('[PG] insertTask arrive failed:', (e as Error).message);
+    return res.status(500).json({ error: `任务创建失败（PG写入异常）: ${(e as Error).message}` });
+  }
+
+  // LEGACY MIRROR: db.createTask（best-effort，不得掩盖 PG 失败）
+  try {
+    db.createTask({
+      id: taskId,
+      type: 'arrive',
+      site: siteCode,
+      status: 'pending',
+      total_count: totalCount,
+      done_count: 0,
+      fail_count: 0,
+      input_data: JSON.stringify(inputData),
+    });
+  } catch (e) {
+    console.warn('[DB] createTask legacy mirror failed (arrive, non-blocking):', (e as Error).message);
+  }
 
   taskLogManager.addLog(taskId, 'info', `任务开始: 到件扫描, 单号数=${totalCount}, 员工数=${finalAssignments.length || '(自动)'}`, 'api');
 
@@ -1031,27 +1089,41 @@ router.post('/api/operations/dispatch', async (req: Request, res: Response) => {
   // 2. 创建任务记录
   // ★ 交付前加固：site 字段统一存 siteCode（如 'tiannanda'），与 PG 一致
   const siteCode = normalizeSiteToCode(site, _config, 'dispatch');
-  const taskId = db.createTask({
-    type: 'dispatch',
-    site: siteCode,
-    status: 'pending',
-    total_count: totalCount,
-    done_count: 0,
-    fail_count: 0,
-    input_data: JSON.stringify({ executionMode, assignments }),
-  });
 
-  // ★ Phase 3-Fix2: 同步写入 PG，确保任务中心列表可查询
-  void pg.insertTask({
-    id: taskId,
-    type: 'dispatch',
-    siteId: siteCode,
-    status: 'pending',
-    totalCount,
-    doneCount: 0,
-    failCount: 0,
-    inputData: { executionMode, assignments },
-  }).catch(e => console.error('[PG] insertTask dispatch failed:', (e as Error).message));
+  // Phase 2-C: PG 主写 — 预生成 UUID，先写 PG（PRIMARY），失败直接 500
+  const taskId = randomUUID();
+  const inputData = { executionMode, assignments };
+  try {
+    await pg.insertTask({
+      id: taskId,
+      type: 'dispatch',
+      siteId: siteCode,
+      status: 'pending',
+      totalCount,
+      doneCount: 0,
+      failCount: 0,
+      inputData,
+    });
+  } catch (e) {
+    console.error('[PG] insertTask dispatch failed:', (e as Error).message);
+    return res.status(500).json({ error: `任务创建失败（PG写入异常）: ${(e as Error).message}` });
+  }
+
+  // LEGACY MIRROR: db.createTask（best-effort，不得掩盖 PG 失败）
+  try {
+    db.createTask({
+      id: taskId,
+      type: 'dispatch',
+      site: siteCode,
+      status: 'pending',
+      total_count: totalCount,
+      done_count: 0,
+      fail_count: 0,
+      input_data: JSON.stringify(inputData),
+    });
+  } catch (e) {
+    console.warn('[DB] createTask legacy mirror failed (dispatch, non-blocking):', (e as Error).message);
+  }
 
   taskLogManager.addLog(taskId, 'info', `任务开始: 派件扫描, 员工数=${assignments.length}, 单号数=${totalCount}`, 'api');
 
@@ -1141,27 +1213,41 @@ router.post('/api/operations/integrated', async (req: Request, res: Response) =>
   // 2. 创建任务记录
   // ★ 交付前加固：site 字段统一存 siteCode（如 'tiannanda'），与 PG 一致
   const siteCode = normalizeSiteToCode(site, _config, 'integrated');
-  const taskId = db.createTask({
-    type: 'integrated',
-    site: siteCode,
-    status: 'pending',
-    total_count: totalCount,
-    done_count: 0,
-    fail_count: 0,
-    input_data: JSON.stringify({ executionMode, assignments }),
-  });
 
-  // ★ Phase 3-Fix2: 同步写入 PG，确保任务中心列表可查询
-  void pg.insertTask({
-    id: taskId,
-    type: 'integrated',
-    siteId: siteCode,
-    status: 'pending',
-    totalCount,
-    doneCount: 0,
-    failCount: 0,
-    inputData: { executionMode, assignments },
-  }).catch(e => console.error('[PG] insertTask integrated failed:', (e as Error).message));
+  // Phase 2-C: PG 主写 — 预生成 UUID，先写 PG（PRIMARY），失败直接 500
+  const taskId = randomUUID();
+  const inputData = { executionMode, assignments };
+  try {
+    await pg.insertTask({
+      id: taskId,
+      type: 'integrated',
+      siteId: siteCode,
+      status: 'pending',
+      totalCount,
+      doneCount: 0,
+      failCount: 0,
+      inputData,
+    });
+  } catch (e) {
+    console.error('[PG] insertTask integrated failed:', (e as Error).message);
+    return res.status(500).json({ error: `任务创建失败（PG写入异常）: ${(e as Error).message}` });
+  }
+
+  // LEGACY MIRROR: db.createTask（best-effort，不得掩盖 PG 失败）
+  try {
+    db.createTask({
+      id: taskId,
+      type: 'integrated',
+      site: siteCode,
+      status: 'pending',
+      total_count: totalCount,
+      done_count: 0,
+      fail_count: 0,
+      input_data: JSON.stringify(inputData),
+    });
+  } catch (e) {
+    console.warn('[DB] createTask legacy mirror failed (integrated, non-blocking):', (e as Error).message);
+  }
 
   taskLogManager.addLog(taskId, 'info', `任务开始: 到派一体扫描, 员工数=${assignments.length}, 单号数=${totalCount}`, 'api');
 
@@ -1252,27 +1338,41 @@ router.post('/api/operations/sign', async (req: Request, res: Response) => {
   // 2. 创建任务记录
   // ★ 交付前加固：site 字段统一存 siteCode（如 'tiannanda'），与 PG 一致
   const siteCode = normalizeSiteToCode(site, _config, 'sign');
-  const taskId = db.createTask({
-    type: 'sign',
-    site: siteCode,
-    status: 'pending',
-    total_count: totalCount,
-    done_count: 0,
-    fail_count: 0,
-    input_data: JSON.stringify({ executionMode, assignments }),
-  });
 
-  // ★ Phase 3-Fix2: 同步写入 PG，确保任务中心列表可查询
-  void pg.insertTask({
-    id: taskId,
-    type: 'sign',
-    siteId: siteCode,
-    status: 'pending',
-    totalCount,
-    doneCount: 0,
-    failCount: 0,
-    inputData: { executionMode, assignments },
-  }).catch(e => console.error('[PG] insertTask sign failed:', (e as Error).message));
+  // Phase 2-C: PG 主写 — 预生成 UUID，先写 PG（PRIMARY），失败直接 500
+  const taskId = randomUUID();
+  const inputData = { executionMode, assignments };
+  try {
+    await pg.insertTask({
+      id: taskId,
+      type: 'sign',
+      siteId: siteCode,
+      status: 'pending',
+      totalCount,
+      doneCount: 0,
+      failCount: 0,
+      inputData,
+    });
+  } catch (e) {
+    console.error('[PG] insertTask sign failed:', (e as Error).message);
+    return res.status(500).json({ error: `任务创建失败（PG写入异常）: ${(e as Error).message}` });
+  }
+
+  // LEGACY MIRROR: db.createTask（best-effort，不得掩盖 PG 失败）
+  try {
+    db.createTask({
+      id: taskId,
+      type: 'sign',
+      site: siteCode,
+      status: 'pending',
+      total_count: totalCount,
+      done_count: 0,
+      fail_count: 0,
+      input_data: JSON.stringify(inputData),
+    });
+  } catch (e) {
+    console.warn('[DB] createTask legacy mirror failed (sign, non-blocking):', (e as Error).message);
+  }
 
   taskLogManager.addLog(taskId, 'info', `任务开始: 签收录入(预览模式), 员工数=${assignments.length}`, 'api');
   taskLogManager.addLog(taskId, 'info', `SIGN_DRY_RUN=true，将停止在签收确认弹窗，禁止真实签收`, 'api');
@@ -1725,8 +1825,9 @@ router.post('/api/tasks/:taskId/cancel', async (req: Request, res: Response) => 
     }
 
     // 调用 Engine 取消任务（内部：abort → db.update('cancelled') → Map.delete）
+    // Phase 2-C: await PG 终态写入完成（不再 fire-and-forget）
     const engine = AssignmentEngine.getInstance();
-    const cancelled = engine.cancelTask(taskId);
+    const cancelled = await engine.cancelTask(taskId);
 
     if (!cancelled) {
       return res.status(500).json({

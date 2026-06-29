@@ -184,10 +184,14 @@ export class AssignmentEngine {
    *   3. 立即更新 DB 状态为 'cancelled'（早于 Engine catch 块，防止被覆盖为 'failed'）
    *   4. 从 Map 中 delete（防止后续重复取消）
    *
+   * Phase 2-C: 改为 async，await PG 终态/日志写入完成（不再 fire-and-forget）。
+   *   - abort() 仍同步执行（立即终止 Handler）
+   *   - PG 写入失败时仅记录错误，不抛出（cancelTask 不能因 PG 失败而失败）
+   *
    * @param taskId 要取消的任务 ID
    * @returns true=成功取消，false=任务未在运行中（已完成或不存在）
    */
-  cancelTask(taskId: string): boolean {
+  async cancelTask(taskId: string): Promise<boolean> {
     const controller = this.cancelControllers.get(taskId);
     if (!controller) {
       console.warn(`[Engine] cancelTask: 任务 ${taskId} 未在运行中，无法取消`);
@@ -201,31 +205,41 @@ export class AssignmentEngine {
     const db = Database.getInstance();
     const task = db.getTask(taskId);
     if (task && task.status === 'running') {
-      db.updateTask(taskId, {
-        status: 'cancelled',
-        finished_at: new Date().toISOString(),
-      });
+      const now = new Date().toISOString();
+      // LEGACY MIRROR: db.updateTask（best-effort）
+      try {
+        db.updateTask(taskId, {
+          status: 'cancelled',
+          finished_at: now,
+        });
+      } catch (e) {
+        console.warn(`[Engine][DB] cancelTask legacy mirror failed (task=${taskId}):`, (e as Error).message);
+      }
       taskLogManager.addLog(taskId, 'warning', '任务已被手动取消', 'Engine');
       console.log(`[Engine] 任务 ${taskId} 已取消 (status: cancelled)`);
 
-      // ★ PG: 取消终态 + 日志（fire-and-forget）
+      // Phase 2-C: PG 主写 — await 终态 + 日志（不再 fire-and-forget）
       const pgDb = PgDatabase.getInstance();
-      pgDb.updateTaskStatus(taskId, {
-        status: 'cancelled',
-        finishedAt: new Date().toISOString(),
-      }).catch(err =>
-        console.error(`[Engine][PG] 取消终态更新失败 (task=${taskId}):`, err.message)
-      );
-      pgDb.insertTaskLogs([{
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        taskId,
-        timestamp: Date.now(),
-        level: 'warning',
-        message: '任务已被手动取消',
-        source: 'Engine',
-      }]).catch(err =>
-        console.error(`[Engine][PG] 取消日志写入失败 (task=${taskId}):`, err.message)
-      );
+      try {
+        await pgDb.updateTaskStatus(taskId, {
+          status: 'cancelled',
+          finishedAt: now,
+        });
+      } catch (err) {
+        console.error(`[Engine][PG] 取消终态更新失败 (task=${taskId}):`, (err as Error).message);
+      }
+      try {
+        await pgDb.insertTaskLogs([{
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          taskId,
+          timestamp: Date.now(),
+          level: 'warning',
+          message: '任务已被手动取消',
+          source: 'Engine',
+        }]);
+      } catch (err) {
+        console.error(`[Engine][PG] 取消日志写入失败 (task=${taskId}):`, (err as Error).message);
+      }
     }
 
     // Step 3: 从 Map 中移除（execute() finally 也会 delete，此处提前清理无害）
@@ -239,9 +253,11 @@ export class AssignmentEngine {
    * 遍历 cancelControllers Map 中的所有 taskId，逐一调用 cancelTask()。
    * 每个 Handler 收到 AbortError 后释放锁 → finally 块执行 → 锁回收。
    *
+   * Phase 2-C: 改为 async，await 每个 cancelTask 的 PG 写入完成。
+   *
    * @returns 被取消的 taskId 列表
    */
-  cancelAllRunningTasks(): string[] {
+  async cancelAllRunningTasks(): Promise<string[]> {
     const taskIds = Array.from(this.cancelControllers.keys());
     if (taskIds.length === 0) {
       console.log('[Engine] cancelAllRunningTasks: 没有运行中的任务');
@@ -250,7 +266,7 @@ export class AssignmentEngine {
     console.log(`[Engine] cancelAllRunningTasks: 正在取消 ${taskIds.length} 个运行中任务...`);
     for (const taskId of taskIds) {
       // 复用已有的 cancelTask，保证一致的 abort → DB 更新 → delete 流程
-      this.cancelTask(taskId);
+      await this.cancelTask(taskId);
     }
     console.log(`[Engine] cancelAllRunningTasks: 完成，已取消 ${taskIds.length} 个任务`);
     return taskIds;
@@ -280,7 +296,7 @@ export class AssignmentEngine {
 
     const taskContext: TaskContext = { taskId, site, taskType, dryRunMode };
 
-    // PG 数据库（非阻塞接入 — 写入失败不中断 RPA 流程）
+    // PG 数据库（Phase 2-C: 主数据源 — 写入失败必须明确处理，不再 fire-and-forget）
     const pgDb = PgDatabase.getInstance();
 
     // Phase I: 废除 allResults 全量内存缓存，改用计数器
@@ -289,17 +305,27 @@ export class AssignmentEngine {
 
     // Phase I: 简易 Promise 链 — 保证同一任务的结果写入串行执行（不依赖第三方库）
     // 多 Assignment 并发 onProgress → 通过 writeChain 排队写入 → 避免竞态覆盖
+    // Phase 2-C: PG 写入也链入 writeChain，确保 await writeChain 时 PG 写入也完成
     let writeChain: Promise<void> = Promise.resolve();
 
-    // PG: 批次序号 + 日志缓冲（每 50 条或任务结束时冲刷）
+    // Phase 2-C: PG 写入错误跟踪标志
+    //   - 批次结果/运单池写入失败时置位
+    //   - 任务结束时检查此标志，若为 true 则任务标记为 failed（不能标记 done）
+    //   - 使用 wrapper 对象避免 TS 控制流分析将闭包赋值窄化为 never
+    const pgWriteState: { error: Error | null } = { error: null };
+
+    // PG: 批次序号 + 日志缓冲（任务结束时冲刷）
     let pgBatchSeq = 0;
     const pgLogBuffer: TaskLogEntry[] = [];
-    const flushPgLogs = () => {
+    const flushPgLogs = async (): Promise<void> => {
       if (pgLogBuffer.length === 0) return;
       const batch = pgLogBuffer.splice(0);
-      pgDb.insertTaskLogs(batch).catch(err =>
-        console.error(`[Engine][PG] 日志批量写入失败 (task=${taskId}):`, err.message)
-      );
+      try {
+        await pgDb.insertTaskLogs(batch);
+      } catch (err) {
+        console.error(`[Engine][PG] 日志批量写入失败 (task=${taskId}):`, (err as Error).message);
+        // 日志写入失败不中断任务，但记录错误
+      }
     };
 
     // Phase G-3: 创建 AbortController，存入 Map
@@ -321,40 +347,48 @@ export class AssignmentEngine {
       const failInBatch = newResults.filter(r => !r.success).length;
       totalFail += failInBatch;
 
-      // 2. 更新任务计数（只写计数字段，不写 result_data）
-      db.updateTask(taskId, { done_count: totalDone, fail_count: totalFail });
+      // 2. LEGACY MIRROR: db.updateTask（best-effort，不阻塞进度上报）
+      try {
+        db.updateTask(taskId, { done_count: totalDone, fail_count: totalFail });
+      } catch (e) {
+        console.warn(`[Engine][DB] updateTask legacy mirror failed (task=${taskId}):`, (e as Error).message);
+      }
 
-      // 3. 增量追加批次结果（通过 Promise 链串行写入）
-      //    不 await — fire-and-forget，不让磁盘 IO 阻塞进度上报
+      // 3. LEGACY MIRROR: db.appendTaskResults（via writeChain，best-effort）
+      //    不 await — 不让磁盘 IO 阻塞进度上报
       writeChain = writeChain.then(() =>
         db.appendTaskResults(taskId, newResults),
       ).catch(() => {
         // appendTaskResults 内部已 try-catch，不会真进这里。兜底忽略。
       });
 
-      // 4. ★ PG: 批次结果批量写入 + 运单池 UPSERT（fire-and-forget，不阻塞 RPA）
+      // 4. ★ Phase 2-C: PG 主写 — 批次结果 + 运单池 UPSERT（链入 writeChain，await）
+      //    不再 fire-and-forget；写入失败设置 pgWriteError，任务终态强制 failed
       pgBatchSeq++;
       const currentBatchSeq = pgBatchSeq;
-      pgDb.insertWaybillResults(taskId, currentBatchSeq, newResults).catch(err =>
-        console.error(`[Engine][PG] 批次结果写入失败 (task=${taskId}, batch=${currentBatchSeq}):`, err.message)
-      );
-      // 运单池 UPSERT：每条结果更新 waybill_pool 最新状态
-      for (const r of newResults) {
-        let rStatus: WaybillResultStatus;
-        if (r.dryRun && r.skippedFinalSubmit) {
-          rStatus = 'DRY_RUN_SKIPPED';
-        } else {
-          rStatus = r.status || (r.success ? 'SUCCESS' : 'FAILED');
+      writeChain = writeChain.then(async () => {
+        // 4a. 批次结果批量写入
+        await pgDb.insertWaybillResults(taskId, currentBatchSeq, newResults);
+        // 4b. 运单池 UPSERT：每条结果更新 waybill_pool 最新状态
+        for (const r of newResults) {
+          let rStatus: WaybillResultStatus;
+          if (r.dryRun && r.skippedFinalSubmit) {
+            rStatus = 'DRY_RUN_SKIPPED';
+          } else {
+            rStatus = r.status || (r.success ? 'SUCCESS' : 'FAILED');
+          }
+          await pgDb.upsertWaybillPool(
+            r.waybillNo,
+            site,
+            rStatus,
+            taskId,
+          );
         }
-        pgDb.upsertWaybillPool(
-          r.waybillNo,
-          site,
-          rStatus,
-          taskId,
-        ).catch(err =>
-          console.error(`[Engine][PG] 运单池更新失败 (waybill=${r.waybillNo}):`, err.message)
-        );
-      }
+      }).catch(err => {
+        console.error(`[Engine][PG] 批次结果写入失败 (task=${taskId}, batch=${currentBatchSeq}):`, (err as Error).message);
+        // 记录 PG 写入错误，任务终态将强制为 failed
+        if (!pgWriteState.error) pgWriteState.error = err as Error;
+      });
 
       // 5. TC-05B: 通过 SSE 推送进度更新事件
       taskEventBus.emit({
@@ -368,7 +402,19 @@ export class AssignmentEngine {
     };
 
     try {
-      db.updateTask(taskId, { status: 'running' });
+      // Phase 2-C: PG 主写 — status='running'（await，失败抛出 → 进入 catch 标记 failed）
+      try {
+        await pgDb.updateTaskStatus(taskId, { status: 'running' });
+      } catch (e) {
+        console.error(`[Engine][PG] 任务状态更新为 running 失败 (task=${taskId}):`, (e as Error).message);
+        throw new Error(`PG 任务状态更新失败（running）: ${(e as Error).message}`);
+      }
+      // LEGACY MIRROR: db.updateTask（best-effort）
+      try {
+        db.updateTask(taskId, { status: 'running' });
+      } catch (e) {
+        console.warn(`[Engine][DB] updateTask(running) legacy mirror failed (task=${taskId}):`, (e as Error).message);
+      }
 
       // Phase 9-dryrun: 记录当前运行模式
       const modeLabel = dryRunMode ? '试运行模式（跳过最终提交）' : '真实执行模式';
@@ -432,22 +478,9 @@ export class AssignmentEngine {
         assignments = [{ staffName, waybillNos }];
       }
 
-      // ★ PG: 任务创建（fire-and-forget，使用 routes.ts 预生成的 UUID）
-      // Phase 8.2: 放在 auto-select 之后，确保 totalCount 正确
-      // Phase 4-C: taskType 'arrival' → PG schema CHECK 约束要求 'arrive'
-      //   Engine/Handler 内部使用 'arrival'，PG tasks.type CHECK 只允许 'arrive'
-      //   此映射集中在此处，避免修改 routes.ts / Handler / schema
-      const totalWaybillCount = assignments.reduce((s, a) => s + a.waybillNos.length, 0);
-      const pgTaskType = taskType === 'arrival' ? 'arrive' : taskType;
-      pgDb.insertTask({
-        id: taskId,
-        type: pgTaskType,
-        siteId: site,
-        status: 'running',
-        totalCount: totalWaybillCount,
-      }).catch(err =>
-        console.error(`[Engine][PG] 任务插入失败 (task=${taskId}):`, err.message)
-      );
+      // Phase 2-C: 移除 pgDb.insertTask — 任务创建已由 routes.ts 以 PG 主写完成
+      //   （原 fire-and-forget insertTask 会因 duplicate key 静默失败，现已删除）
+      //   Engine 只需 updateTaskStatus(running)，已在 try 块开头完成。
 
       taskLogManager.addLog(taskId, 'info',
         `Engine 开始执行: type=${taskType}, 员工数=${assignments.length}, 单号数=${totalCount}, handlerTimeout=${handlerTimeoutMs / 1000}s`,
@@ -525,7 +558,8 @@ export class AssignmentEngine {
             const currentTask = db.getTask(taskId);
             if (currentTask && currentTask.status === 'cancelled') {
               // Phase 8.2: 补齐 TASK_FINISHED + flushPgLogs（finally 已释放 lease）
-              this.emitTaskFinished(taskId, 'failed', 0, 0, pgLogBuffer);
+              // Phase 2-C: await emitTaskFinished（PG 日志写入）
+              await this.emitTaskFinished(taskId, 'failed', 0, 0, pgLogBuffer);
               return;
             }
           }
@@ -537,8 +571,9 @@ export class AssignmentEngine {
         }
 
         // 初始化成功（Phase 8.2: 补齐 TASK_FINISHED，fullSideEffects=true）
+        // Phase 2-C: finalizeTask 已改为 async，await PG 终态写入完成
         if (!abortController.signal.aborted) {
-          this.finalizeTask(
+          await this.finalizeTask(
             taskId,
             'done',
             1,
@@ -551,14 +586,26 @@ export class AssignmentEngine {
         } else {
           // 边缘情况：abort在handler完成后触发（cancelTask与handler完成竞态）
           // Phase 8.2: 补齐 TASK_FINISHED（事件 status 映射为 failed，DB 保持 cancelled）
+          // Phase 2-C: await PG 终态写入（不再 fire-and-forget）
           const finalStatus = db.getTask(taskId)?.status === 'cancelled' ? 'cancelled' : 'failed';
-          pgDb.updateTaskStatus(taskId, {
-            status: finalStatus,
-            doneCount: 1,
-            failCount: 0,
-            finishedAt: new Date().toISOString(),
-          }).catch(err => console.error(`[Engine][PG] init_window 终态更新失败:`, err.message));
-          this.emitTaskFinished(taskId, 'failed', 1, 0, pgLogBuffer);
+          const nowIso = new Date().toISOString();
+          // LEGACY MIRROR: db.updateTask（best-effort）
+          try {
+            db.updateTask(taskId, { status: finalStatus, done_count: 1, fail_count: 0, finished_at: nowIso });
+          } catch (e) {
+            console.warn(`[Engine][DB] init_window 终态 legacy mirror failed (task=${taskId}):`, (e as Error).message);
+          }
+          try {
+            await pgDb.updateTaskStatus(taskId, {
+              status: finalStatus,
+              doneCount: 1,
+              failCount: 0,
+              finishedAt: nowIso,
+            });
+          } catch (err) {
+            console.error(`[Engine][PG] init_window 终态更新失败 (task=${taskId}):`, (err as Error).message);
+          }
+          await this.emitTaskFinished(taskId, 'failed', 1, 0, pgLogBuffer);
         }
 
         return;
@@ -623,7 +670,8 @@ export class AssignmentEngine {
         if (currentTask && currentTask.status === 'cancelled') {
           // Phase 8.2: 等待写入完成 + 补齐 TASK_FINISHED + flushPgLogs
           try { await writeChain; } catch { /* 忽略 */ }
-          this.emitTaskFinished(taskId, 'failed', totalDone - totalFail, totalFail, pgLogBuffer);
+          // Phase 2-C: await emitTaskFinished（PG 日志写入）
+          await this.emitTaskFinished(taskId, 'failed', totalDone - totalFail, totalFail, pgLogBuffer);
           return;
         }
 
@@ -634,7 +682,7 @@ export class AssignmentEngine {
           if (currentTask2 && currentTask2.status === 'cancelled') {
             // Phase 8.2: cancelTask() 先一步设置了 cancelled，补齐 TASK_FINISHED + flushPgLogs
             try { await writeChain; } catch { /* 忽略 */ }
-            this.emitTaskFinished(taskId, 'failed', totalDone - totalFail, totalFail, pgLogBuffer);
+            await this.emitTaskFinished(taskId, 'failed', totalDone - totalFail, totalFail, pgLogBuffer);
             return;
           }
           // 标记为 failed（超时导致）
@@ -649,6 +697,7 @@ export class AssignmentEngine {
       }
 
       // Phase I: 等待所有批次写入完成后再结束任务
+      // Phase 2-C: writeChain 包含 PG 批次结果写入，await 确保全部完成
       await writeChain;
 
       // 成功路径：只有在 taskPromise resolve 且未被 abort 时到达
@@ -657,7 +706,7 @@ export class AssignmentEngine {
         const currentTask = db.getTask(taskId);
         if (currentTask && currentTask.status === 'cancelled') {
           // Phase 8.2: 被 cancelTask 取消，补齐 TASK_FINISHED + flushPgLogs
-          this.emitTaskFinished(taskId, 'failed', totalDone - totalFail, totalFail, pgLogBuffer);
+          await this.emitTaskFinished(taskId, 'failed', totalDone - totalFail, totalFail, pgLogBuffer);
           return;
         }
         // 超时触发的 abort 但 taskPromise 先 resolve 了（极边缘情况）
@@ -669,16 +718,22 @@ export class AssignmentEngine {
 
       // Phase G-3: 如果所有结果都是失败（硬超时/全部抛错），标记为 failed 而非 done
       const allFailed = totalDone > 0 && totalFail === totalDone;
-      const finalStatus = allFailed ? 'failed' : 'done';
+      // Phase 2-C: PG 批次结果写入失败时，任务不能标记 done，强制 failed
+      const pgErr: Error | null = pgWriteState.error;
+      const finalStatus = (allFailed || pgErr) ? 'failed' : 'done';
+      const finalMsg = pgErr
+        ? `Engine 任务完成但 PG 写入失败，强制标记 failed: ${pgErr.message}`
+        : `Engine 任务完成: 状态=${finalStatus}, 成功=${finalSuccessCount}, 失败=${totalFail}`;
 
-      this.finalizeTask(
+      // Phase 2-C: await finalizeTask（PG 终态写入）
+      await this.finalizeTask(
         taskId,
         finalStatus,
         totalDone,
         totalFail,
         pgLogBuffer,
-        `Engine 任务完成: 状态=${finalStatus}, 成功=${finalSuccessCount}, 失败=${totalFail}`,
-        'info',
+        finalMsg,
+        pgErr ? 'error' : 'info',
         '任务终态更新失败',
       );
     } catch (err) {
@@ -689,7 +744,7 @@ export class AssignmentEngine {
       const currentTask = db.getTask(taskId);
       if (currentTask && currentTask.status === 'cancelled') {
         // Phase 8.2: cancelTask() 已设置 cancelled，补齐 TASK_FINISHED + flushPgLogs
-        this.emitTaskFinished(taskId, 'failed', totalDone - totalFail, totalFail, pgLogBuffer);
+        await this.emitTaskFinished(taskId, 'failed', totalDone - totalFail, totalFail, pgLogBuffer);
         return;
       }
 
@@ -700,7 +755,8 @@ export class AssignmentEngine {
         || errMsg.includes('Handler 执行超时');
       const failureMsg = `Engine 任务失败: ${isTimeout ? '任务超时终止' : (isLockError ? '窗口被占用' : errMsg)}`;
 
-      this.finalizeTask(
+      // Phase 2-C: await finalizeTask（PG 终态写入）
+      await this.finalizeTask(
         taskId,
         'failed',
         totalDone,
@@ -1167,8 +1223,12 @@ export class AssignmentEngine {
    * 收敛原来散落在成功路径(L589)、失败路径(L641)、init_window(L463)的重复代码。
    * fullSideEffects=false 时仅执行核心终态写入(DB+PG+log+flush)，
    * 不推送完成事件、不更新Metrics、不向PG日志缓冲push完成消息（用于init_window保持行为一致）。
+   *
+   * Phase 2-C: 改为 async，PG 终态写入必须 await（不再 fire-and-forget）。
+   *   - PG updateTaskStatus 失败时仅记录错误（不抛出，避免在 catch 路径中二次抛错）
+   *   - PG insertTaskLogs 失败时仅记录错误（日志写入不应阻塞终态）
    */
-  private finalizeTask(
+  private async finalizeTask(
     taskId: string,
     status: 'done' | 'failed',
     doneCount: number,
@@ -1179,18 +1239,23 @@ export class AssignmentEngine {
     pgErrorContext: string,
     err?: Error,
     fullSideEffects: boolean = true,
-  ): void {
+  ): Promise<void> {
     const db = Database.getInstance();
     const pgDb = PgDatabase.getInstance();
     const now = new Date().toISOString();
     const successCount = doneCount - failCount;
 
-    db.updateTask(taskId, {
-      status,
-      done_count: doneCount,
-      fail_count: failCount,
-      finished_at: now,
-    });
+    // LEGACY MIRROR: db.updateTask（best-effort）
+    try {
+      db.updateTask(taskId, {
+        status,
+        done_count: doneCount,
+        fail_count: failCount,
+        finished_at: now,
+      });
+    } catch (e) {
+      console.warn(`[Engine][DB] finalizeTask legacy mirror failed (task=${taskId}):`, (e as Error).message);
+    }
 
     taskLogManager.addLog(taskId, logLevel, logMessage, 'Engine');
 
@@ -1209,20 +1274,26 @@ export class AssignmentEngine {
       });
     }
 
-    pgDb.updateTaskStatus(taskId, {
-      status,
-      doneCount,
-      failCount,
-      finishedAt: now,
-    }).catch(pgErr =>
-      console.error(`[Engine][PG] ${pgErrorContext} (task=${taskId}):`, pgErr.message)
-    );
+    // Phase 2-C: PG 主写 — await updateTaskStatus（不再 fire-and-forget）
+    try {
+      await pgDb.updateTaskStatus(taskId, {
+        status,
+        doneCount,
+        failCount,
+        finishedAt: now,
+      });
+    } catch (pgErr) {
+      console.error(`[Engine][PG] ${pgErrorContext} (task=${taskId}):`, (pgErr as Error).message);
+    }
 
+    // Phase 2-C: PG 主写 — await insertTaskLogs（不再 fire-and-forget）
     if (pgLogBuffer.length > 0) {
       const batch = pgLogBuffer.splice(0);
-      pgDb.insertTaskLogs(batch).catch(pgErr =>
-        console.error(`[Engine][PG] 日志批量写入失败 (task=${taskId}):`, pgErr.message)
-      );
+      try {
+        await pgDb.insertTaskLogs(batch);
+      } catch (pgErr) {
+        console.error(`[Engine][PG] 日志批量写入失败 (task=${taskId}):`, (pgErr as Error).message);
+      }
     }
 
     if (fullSideEffects) {
@@ -1248,21 +1319,25 @@ export class AssignmentEngine {
    * 用于 cancelled return 路径：cancelTask() 已经写入 DB/PG 的 cancelled 状态，
    * 本方法不覆盖 DB/PG，仅补齐缺失的 TASK_FINISHED 事件和 PG 日志冲刷，
    * 确保 SSE 连接正常关闭、生命周期完整。
+   *
+   * Phase 2-C: 改为 async，await PG 日志写入完成（不再 fire-and-forget）。
    */
-  private emitTaskFinished(
+  private async emitTaskFinished(
     taskId: string,
     status: 'done' | 'failed',
     successCount: number,
     failedCount: number,
     pgLogBuffer: TaskLogEntry[],
-  ): void {
+  ): Promise<void> {
     const pgDb = PgDatabase.getInstance();
 
     if (pgLogBuffer.length > 0) {
       const batch = pgLogBuffer.splice(0);
-      pgDb.insertTaskLogs(batch).catch(err =>
-        console.error(`[Engine][PG] 日志批量写入失败 (task=${taskId}):`, err.message)
-      );
+      try {
+        await pgDb.insertTaskLogs(batch);
+      } catch (err) {
+        console.error(`[Engine][PG] 日志批量写入失败 (task=${taskId}):`, (err as Error).message);
+      }
     }
 
     taskEventBus.emit({

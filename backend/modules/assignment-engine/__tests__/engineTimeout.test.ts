@@ -319,7 +319,7 @@ describe('AssignmentEngine — 取消机制 (Phase 9.2: Lease)', () => {
 
     await new Promise(r => setTimeout(r, 100));
 
-    const cancelled = engine.cancelTask('test-cancel-001');
+    const cancelled = await engine.cancelTask('test-cancel-001');
     expect(cancelled).toBe(true);
 
     await taskPromise;
@@ -341,9 +341,9 @@ describe('AssignmentEngine — 取消机制 (Phase 9.2: Lease)', () => {
     expect(failedCalls.length).toBe(0);
   });
 
-  it('B-2: cancelTask() 对不存在的任务返回 false', () => {
+  it('B-2: cancelTask() 对不存在的任务返回 false', async () => {
     const engine = AssignmentEngine.getInstance();
-    const result = engine.cancelTask('non-existent-task-id');
+    const result = await engine.cancelTask('non-existent-task-id');
     expect(result).toBe(false);
   });
 
@@ -373,7 +373,7 @@ describe('AssignmentEngine — 取消机制 (Phase 9.2: Lease)', () => {
       handler: createOkHandler(),
     });
 
-    const result = engine.cancelTask('test-done-001');
+    const result = await engine.cancelTask('test-done-001');
     expect(result).toBe(false);
   });
 });
@@ -405,7 +405,7 @@ describe('AssignmentEngine — 内存泄漏防护 (Phase 9.2: Lease)', () => {
       handler: createOkHandler(),
     });
 
-    const result = engine.cancelTask('test-cleanup-001');
+    const result = await engine.cancelTask('test-cleanup-001');
     expect(result).toBe(false);
     // 验证 lease.release 被调用（无资源残留）
     expect(lease.release).toHaveBeenCalled();
@@ -440,7 +440,7 @@ describe('AssignmentEngine — 内存泄漏防护 (Phase 9.2: Lease)', () => {
       handlerTimeoutMs: 500,
     });
 
-    const result = engine.cancelTask('test-cleanup-timeout');
+    const result = await engine.cancelTask('test-cleanup-timeout');
     expect(result).toBe(false);
     expect(lease.release).toHaveBeenCalled();
   });
@@ -474,13 +474,13 @@ describe('AssignmentEngine — 内存泄漏防护 (Phase 9.2: Lease)', () => {
 
     await new Promise(r => setTimeout(r, 100));
 
-    const firstCancel = engine.cancelTask('test-cleanup-cancel');
+    const firstCancel = await engine.cancelTask('test-cleanup-cancel');
     expect(firstCancel).toBe(true);
 
     await taskPromise;
     await new Promise(r => setTimeout(r, 50));
 
-    const secondCancel = engine.cancelTask('test-cleanup-cancel');
+    const secondCancel = await engine.cancelTask('test-cleanup-cancel');
     expect(secondCancel).toBe(false);
     expect(lease.release).toHaveBeenCalled();
   });

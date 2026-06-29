@@ -121,7 +121,8 @@ function setupShutdownHandlers(): void {
     // Step 2: 取消所有运行中任务 → Handler 收到 AbortError → 锁释放
     console.log(`[Shutdown] 正在取消所有运行中任务...`);
     const engine = AssignmentEngine.getInstance();
-    const cancelledTaskIds = engine.cancelAllRunningTasks();
+    // Phase 2-C: await PG 终态写入完成（不再 fire-and-forget）
+    const cancelledTaskIds = await engine.cancelAllRunningTasks();
     console.log(`[Shutdown] 已取消 ${cancelledTaskIds.length} 个运行中任务`);
 
     // Step 3: 等待 2 秒让 Handler 的 finally 块执行完毕（锁释放 + 批次写入完成）
