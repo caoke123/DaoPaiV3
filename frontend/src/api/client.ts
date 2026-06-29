@@ -4,6 +4,70 @@
 // ⚠️ 以下所有类型必须与 src/types/api-contracts.ts 保持 1:1 同步
 //    任何字段新增/变更 → 先改 api-contracts.ts → 再改本文件
 //    版本: v1.0 (2026-06-22)
+//
+// Phase 3-D: 新增 fetchWithAuth — 自动携带 Bearer token + 401 自动 refresh
+
+import { getAccessToken, getRefreshToken, setAccessToken, clearAllTokens, triggerAuthFailure } from '../stores/authStore';
+
+// ── fetchWithAuth: 自动携带 Bearer token + 401 自动 refresh ──
+
+let isRefreshing = false;
+let refreshPromise: Promise<string | null> | null = null;
+
+async function refreshAccessToken(): Promise<string | null> {
+  if (isRefreshing) return refreshPromise!;
+  isRefreshing = true;
+  refreshPromise = (async () => {
+    const refreshToken = getRefreshToken();
+    if (!refreshToken) return null;
+    try {
+      const resp = await fetch('/api/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken }),
+      });
+      if (!resp.ok) {
+        clearAllTokens();
+        return null;
+      }
+      const data = await resp.json();
+      setAccessToken(data.accessToken);
+      return data.accessToken;
+    } catch {
+      return null;
+    } finally {
+      isRefreshing = false;
+      refreshPromise = null;
+    }
+  })();
+  return refreshPromise;
+}
+
+async function fetchWithAuth(url: string, options: RequestInit = {}): Promise<Response> {
+  const token = getAccessToken();
+  const headers: Record<string, string> = {
+    ...(options.headers as Record<string, string> || {}),
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  let resp = await fetch(url, { ...options, headers });
+
+  // 401 → 尝试 refresh 一次
+  if (resp.status === 401 && token) {
+    const newToken = await refreshAccessToken();
+    if (newToken) {
+      headers['Authorization'] = `Bearer ${newToken}`;
+      resp = await fetch(url, { ...options, headers });
+    } else {
+      // refresh 失败 → 清空 token 并跳转登录
+      triggerAuthFailure();
+    }
+  }
+
+  return resp;
+}
 
 // ── 基础字面量类型 ──
 // MUST SYNC WITH src/types/api-contracts.ts
@@ -221,7 +285,7 @@ const BASE = '/api';
 
 /** 获取所有窗口连接状态 */
 export async function fetchStatus(): Promise<StatusResponse> {
-  const resp = await fetch(`${BASE}/status`);
+  const resp = await fetchWithAuth(`${BASE}/status`);
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ error: '请求失败' }));
     throw new Error(err.error || `HTTP ${resp.status}`);
@@ -234,7 +298,7 @@ export async function submitArriveTask(
   site: string,
   waybillNos: string[],
 ): Promise<TaskSubmitResponse> {
-  const resp = await fetch(`${BASE}/operations/arrive`, {
+  const resp = await fetchWithAuth(`${BASE}/operations/arrive`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ site, waybillNos }),
@@ -248,14 +312,14 @@ export async function submitArriveTask(
 
 /** 查询任务进度 */
 export async function getTaskProgress(taskId: string): Promise<TaskProgress> {
-  const resp = await fetch(`${BASE}/operations/${taskId}`);
+  const resp = await fetchWithAuth(`${BASE}/operations/${taskId}`);
   if (!resp.ok) throw new Error(`查询任务失败: HTTP ${resp.status}`);
   return resp.json();
 }
 
 /** 查询任务执行日志 */
 export async function getTaskLogs(taskId: string, limit = 100): Promise<TaskLogEntry[]> {
-  const resp = await fetch(`${BASE}/operations/${taskId}/logs?limit=${limit}`);
+  const resp = await fetchWithAuth(`${BASE}/operations/${taskId}/logs?limit=${limit}`);
   if (!resp.ok) throw new Error(`查询任务日志失败: HTTP ${resp.status}`);
   const data = await resp.json();
   return data.logs || [];
@@ -263,7 +327,7 @@ export async function getTaskLogs(taskId: string, limit = 100): Promise<TaskLogE
 
 /** 切换窗口开关状态（已开→关闭，已关→打开并自动登录） */
 export async function toggleWindow(browerid: string): Promise<{ isConnected: boolean }> {
-  const resp = await fetch(`${BASE}/windows/${browerid}/toggle`, { method: 'POST' });
+  const resp = await fetchWithAuth(`${BASE}/windows/${browerid}/toggle`, { method: 'POST' });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ error: '请求失败' }));
     throw new Error(err.error || `HTTP ${resp.status}`);
@@ -273,7 +337,7 @@ export async function toggleWindow(browerid: string): Promise<{ isConnected: boo
 
 /** Phase 4-D: 关闭 Playwright 窗口（不删除配置） */
 export async function closePlaywrightWindow(siteId: string, staffName: string): Promise<{ success: boolean; alreadyClosed?: boolean; status?: string }> {
-  const resp = await fetch(`${BASE}/sites/${siteId}/playwright-windows/close`, {
+  const resp = await fetchWithAuth(`${BASE}/sites/${siteId}/playwright-windows/close`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ staffName }),
@@ -297,7 +361,7 @@ export async function getTaskList(
   if (search) params.set('search', search);
   if (type) params.set('type', type);
   if (status) params.set('status', status);
-  const resp = await fetch(`${BASE}/operations?${params}`);
+  const resp = await fetchWithAuth(`${BASE}/operations?${params}`);
   if (!resp.ok) throw new Error(`获取任务列表失败: HTTP ${resp.status}`);
   return resp.json();
 }
@@ -327,7 +391,7 @@ export interface TaskStatsResponse {
 
 /** 获取服务端聚合统计 + 系统状态 */
 export async function getTaskStats(): Promise<TaskStatsResponse> {
-  const resp = await fetch(`${BASE}/operations/stats`);
+  const resp = await fetchWithAuth(`${BASE}/operations/stats`);
   if (!resp.ok) throw new Error(`获取统计失败: HTTP ${resp.status}`);
   return resp.json();
 }
@@ -339,7 +403,7 @@ export async function submitTask(
   api: string,
   payload: Record<string, unknown>,
 ): Promise<TaskSubmitResponse> {
-  const resp = await fetch(api, {
+  const resp = await fetchWithAuth(api, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -356,7 +420,7 @@ export async function submitDispatchTask(
   site: string,
   assignments: { staffName: string; waybillNos: string[] }[],
 ): Promise<TaskSubmitResponse> {
-  const resp = await fetch(`${BASE}/operations/dispatch`, {
+  const resp = await fetchWithAuth(`${BASE}/operations/dispatch`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ site, assignments }),
@@ -373,7 +437,7 @@ export async function submitIntegratedTask(
   site: string,
   assignments: { staffName: string; waybillNos: string[] }[],
 ): Promise<TaskSubmitResponse> {
-  const resp = await fetch(`${BASE}/operations/integrated`, {
+  const resp = await fetchWithAuth(`${BASE}/operations/integrated`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ site, assignments }),
@@ -392,7 +456,7 @@ export async function submitSignTask(
   site: string,
   assignments: { staffName: string; waybillNos: string[] }[],
 ): Promise<TaskSubmitResponse> {
-  const resp = await fetch(`${BASE}/operations/sign`, {
+  const resp = await fetchWithAuth(`${BASE}/operations/sign`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ site, assignments }),
@@ -408,7 +472,7 @@ export async function submitSignTask(
 
 /** 获取系统设置配置（网点 + 窗口凭据） */
 export async function getSettingsConfig(): Promise<SettingsConfigResponse> {
-  const resp = await fetch(`${BASE}/settings/config`);
+  const resp = await fetchWithAuth(`${BASE}/settings/config`);
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ error: '请求失败' }));
     throw new Error(err.error || `HTTP ${resp.status}`);
@@ -418,7 +482,7 @@ export async function getSettingsConfig(): Promise<SettingsConfigResponse> {
 
 /** 验证管理员 PIN 码 */
 export async function verifyPin(pin: string): Promise<{ ok: boolean }> {
-  const resp = await fetch(`${BASE}/settings/verify-pin`, {
+  const resp = await fetchWithAuth(`${BASE}/settings/verify-pin`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ pin }),
@@ -432,7 +496,7 @@ export async function verifyPin(pin: string): Promise<{ ok: boolean }> {
 
 /** 更新系统设置配置 */
 export async function updateSettingsConfig(sites: SiteConfig[]): Promise<{ ok: boolean }> {
-  const resp = await fetch(`${BASE}/settings/config`, {
+  const resp = await fetchWithAuth(`${BASE}/settings/config`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sites }),
@@ -453,7 +517,7 @@ export async function getTaskLogsById(
   offset = 0,
 ): Promise<TaskLogsResponse> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-  const resp = await fetch(`${BASE}/tasks/${encodeURIComponent(taskId)}/logs?${params}`);
+  const resp = await fetchWithAuth(`${BASE}/tasks/${encodeURIComponent(taskId)}/logs?${params}`);
   if (!resp.ok) throw new Error(`查询任务日志失败: HTTP ${resp.status}`);
   return resp.json();
 }
@@ -468,21 +532,21 @@ export async function getTaskWaybills(
   if (status) params.set('status', status);
   if (staffName) params.set('staffName', staffName);
   const qs = params.toString();
-  const resp = await fetch(`${BASE}/tasks/${encodeURIComponent(taskId)}/waybills${qs ? `?${qs}` : ''}`);
+  const resp = await fetchWithAuth(`${BASE}/tasks/${encodeURIComponent(taskId)}/waybills${qs ? `?${qs}` : ''}`);
   if (!resp.ok) throw new Error(`查询运单明细失败: HTTP ${resp.status}`);
   return resp.json();
 }
 
 /** 查询任务摘要（任务信息 + 运单统计） */
 export async function getTaskSummary(taskId: string): Promise<TaskSummaryResponse> {
-  const resp = await fetch(`${BASE}/tasks/${encodeURIComponent(taskId)}/summary`);
+  const resp = await fetchWithAuth(`${BASE}/tasks/${encodeURIComponent(taskId)}/summary`);
   if (!resp.ok) throw new Error(`查询任务摘要失败: HTTP ${resp.status}`);
   return resp.json();
 }
 
 /** 查询任务执行人员统计 */
 export async function getTaskStaffSummary(taskId: string): Promise<TaskStaffResponse> {
-  const resp = await fetch(`${BASE}/tasks/${encodeURIComponent(taskId)}/staff`);
+  const resp = await fetchWithAuth(`${BASE}/tasks/${encodeURIComponent(taskId)}/staff`);
   if (!resp.ok) throw new Error(`查询员工统计失败: HTTP ${resp.status}`);
   return resp.json();
 }
@@ -495,7 +559,7 @@ export interface CleanupResponse {
 }
 
 export async function cleanupTasks(days?: number): Promise<CleanupResponse> {
-  const resp = await fetch(`${BASE}/tasks/cleanup`, {
+  const resp = await fetchWithAuth(`${BASE}/tasks/cleanup`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ days: days ?? 30 }),
@@ -511,14 +575,14 @@ export interface DataRetentionConfig {
 }
 
 export async function getDataRetentionConfig(): Promise<DataRetentionConfig> {
-  const resp = await fetch(`${BASE}/settings/data-retention`);
+  const resp = await fetchWithAuth(`${BASE}/settings/data-retention`);
   if (!resp.ok) throw new Error(`获取数据保留配置失败: HTTP ${resp.status}`);
   return resp.json();
 }
 
 /** PUT /api/settings/data-retention — 更新数据保留配置 */
 export async function updateDataRetentionConfig(config: DataRetentionConfig): Promise<{ success: boolean }> {
-  const resp = await fetch(`${BASE}/settings/data-retention`, {
+  const resp = await fetchWithAuth(`${BASE}/settings/data-retention`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
@@ -536,7 +600,7 @@ export interface DeleteStatsResponse {
 }
 
 export async function getTaskDeleteStats(taskIds: string[]): Promise<DeleteStatsResponse> {
-  const resp = await fetch(`${BASE}/tasks/delete-stats`, {
+  const resp = await fetchWithAuth(`${BASE}/tasks/delete-stats`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ taskIds }),
@@ -554,7 +618,7 @@ export interface BatchDeleteResponse {
 }
 
 export async function batchDeleteTasks(taskIds: string[]): Promise<BatchDeleteResponse> {
-  const resp = await fetch(`${BASE}/tasks/batch-delete`, {
+  const resp = await fetchWithAuth(`${BASE}/tasks/batch-delete`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ taskIds }),
@@ -573,7 +637,7 @@ export interface InitWindowResponse {
 }
 
 export async function initWindow(siteId: string, windowId: string): Promise<InitWindowResponse> {
-  const resp = await fetch(`${BASE}/windows/init`, {
+  const resp = await fetchWithAuth(`${BASE}/windows/init`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ site_id: siteId, window_id: windowId }),
@@ -609,7 +673,7 @@ export interface WindowsStatusResponse {
 }
 
 export async function getWindowsStatus(): Promise<WindowsStatusResponse> {
-  const resp = await fetch(`${BASE}/windows/status`);
+  const resp = await fetchWithAuth(`${BASE}/windows/status`);
   if (!resp.ok) throw new Error(`查询窗口状态失败: HTTP ${resp.status}`);
   return resp.json();
 }
@@ -648,7 +712,7 @@ export interface SiteWindowsResponse {
 }
 
 export async function getSiteWindows(siteId: string): Promise<SiteWindowsResponse> {
-  const resp = await fetch(`${BASE}/sites/${siteId}/windows`);
+  const resp = await fetchWithAuth(`${BASE}/sites/${siteId}/windows`);
   if (!resp.ok) throw new Error(`查询站点窗口失败: HTTP ${resp.status}`);
   return resp.json();
 }
@@ -666,7 +730,7 @@ export interface LaunchAllResponse {
 }
 
 export async function launchAllWindows(siteId: string): Promise<LaunchAllResponse> {
-  const resp = await fetch(`${BASE}/sites/${siteId}/windows/launch-all`, {
+  const resp = await fetchWithAuth(`${BASE}/sites/${siteId}/windows/launch-all`, {
     method: 'POST',
   });
   if (!resp.ok) {
@@ -718,7 +782,7 @@ export interface PlaywrightSiteWindowsResponse {
 
 /** 获取当前窗口运行模式（只读，不触发启动） */
 export async function getWindowRuntimeMode(): Promise<WindowRuntimeModeResponse> {
-  const resp = await fetch(`${BASE}/runtime-mode`);
+  const resp = await fetchWithAuth(`${BASE}/runtime-mode`);
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ error: '请求失败' }));
     throw new Error(err.error || `HTTP ${resp.status}`);
@@ -728,7 +792,7 @@ export async function getWindowRuntimeMode(): Promise<WindowRuntimeModeResponse>
 
 /** 查询站点 Playwright 窗口状态（仅查询缓存，不触发启动） */
 export async function getSitePlaywrightWindows(siteId: string): Promise<PlaywrightSiteWindowsResponse> {
-  const resp = await fetch(`${BASE}/sites/${siteId}/playwright-windows`);
+  const resp = await fetchWithAuth(`${BASE}/sites/${siteId}/playwright-windows`);
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ error: '请求失败' }));
     throw new Error(err.error || `HTTP ${resp.status}`);
@@ -751,7 +815,7 @@ export interface PlaywrightLaunchAllResponse {
 
 /** 一键启动该网点所有 offline 的 Playwright 窗口 */
 export async function launchAllPlaywrightWindows(siteId: string): Promise<PlaywrightLaunchAllResponse> {
-  const resp = await fetch(`${BASE}/sites/${siteId}/playwright-windows/launch-all`, {
+  const resp = await fetchWithAuth(`${BASE}/sites/${siteId}/playwright-windows/launch-all`, {
     method: 'POST',
   });
   if (!resp.ok) {
@@ -782,7 +846,7 @@ export interface PlaywrightEnsureResponse {
 
 /** 启动单个员工的 Playwright Chrome 窗口（headed=true, keepOpen=true） */
 export async function ensurePlaywrightWindow(siteId: string, staffName: string): Promise<PlaywrightEnsureResponse> {
-  const resp = await fetch(`${BASE}/sites/${siteId}/playwright-windows/ensure`, {
+  const resp = await fetchWithAuth(`${BASE}/sites/${siteId}/playwright-windows/ensure`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ staffName }),
@@ -798,7 +862,7 @@ export async function ensurePlaywrightWindow(siteId: string, staffName: string):
 
 /** POST /api/easybr/open-browser — 打开/聚焦浏览器窗口 */
 export async function openBrowser(browserId: string): Promise<{ ok: boolean; ws: string; http: string }> {
-  const resp = await fetch(`${BASE}/easybr/open-browser`, {
+  const resp = await fetchWithAuth(`${BASE}/easybr/open-browser`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ browserId }),
@@ -812,7 +876,7 @@ export async function openBrowser(browserId: string): Promise<{ ok: boolean; ws:
 
 /** POST /api/easybr/reconnect — 手动重连 EasyBR（清除熔断器/缓存/异常状态） */
 export async function reconnectEasyBR(): Promise<{ ok: boolean; message: string }> {
-  const resp = await fetch(`${BASE}/easybr/reconnect`, {
+  const resp = await fetchWithAuth(`${BASE}/easybr/reconnect`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
   });
@@ -843,7 +907,7 @@ export interface RuntimeModeUpdateResponse {
 
 /** 获取当前运行模式 */
 export async function getRuntimeMode(): Promise<RuntimeModeResponse> {
-  const resp = await fetch(`${BASE}/runtime/mode`);
+  const resp = await fetchWithAuth(`${BASE}/runtime/mode`);
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ error: '请求失败' }));
     throw new Error(err.error || `HTTP ${resp.status}`);
@@ -853,7 +917,7 @@ export async function getRuntimeMode(): Promise<RuntimeModeResponse> {
 
 /** 修改运行模式 */
 export async function updateRuntimeMode(dryRunMode: boolean): Promise<RuntimeModeUpdateResponse> {
-  const resp = await fetch(`${BASE}/runtime/mode`, {
+  const resp = await fetchWithAuth(`${BASE}/runtime/mode`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ dryRunMode }),

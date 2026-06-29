@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Loader2, ChevronDown, RotateCw, X, RefreshCw, AlertTriangle, Monitor,
+  Loader2, ChevronDown, RotateCw, X, RefreshCw, AlertTriangle, Monitor, LogOut,
 } from 'lucide-react';
+import { useAuth } from '../../stores/authStore';
 import {
   initWindow,
   launchAllWindows,
@@ -50,6 +51,9 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
 
   // ★ P0 安全加固：任务运行中禁止切换站点，防止 UI 当前站点与运行中任务错位
   const { liveStatus } = useTaskExecution();
+
+  // Phase 3-D: 用户认证状态
+  const { user, isAuthenticated, logout } = useAuth();
 
   // ── 初始化中窗口映射 (windowKey → marker/taskId) ──
   // Phase 4-I-3: key 统一使用 getWindowKey(activeSiteId, employeeName) = `${siteId}:${employeeName}`
@@ -652,6 +656,20 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
 
       {/* ━━━━━ Zone C: 右侧工具栏 ━━━━━ */}
       <div className="topbar-right">
+        {/* Phase 3-D: 用户状态 + 退出登录 */}
+        {isAuthenticated && user && (
+          <>
+            <span className="text-[12px] text-[var(--text-2)] font-medium">{user.username}</span>
+            <button
+              onClick={() => logout()}
+              className="p-1 rounded hover:bg-[var(--err-soft)] text-[var(--text-3)] hover:text-[var(--err)] transition"
+              title="退出登录"
+            >
+              <LogOut className="w-3 h-3" />
+            </button>
+            <div className="w-px h-4 bg-[var(--border)]" />
+          </>
+        )}
         {/* 刷新 + 时钟 */}
         <button
           onClick={handleRefresh}
