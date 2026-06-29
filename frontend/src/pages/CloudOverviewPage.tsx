@@ -34,8 +34,8 @@ function Card({ title, icon: Icon, children }: { title: string; icon: React.Elem
 
 function StatusBadge({ status }: { status: string }) {
   const config: Record<string, { icon: React.ElementType; label: string; className: string }> = {
-    available: { icon: CheckCircle, label: '就绪', className: 'bg-green-50 text-green-700 border-green-200' },
-    unavailable: { icon: XCircle, label: '不可用', className: 'bg-red-50 text-red-700 border-red-200' },
+    available: { icon: CheckCircle, label: '正常', className: 'bg-green-50 text-green-700 border-green-200' },
+    unavailable: { icon: XCircle, label: '未就绪', className: 'bg-red-50 text-red-700 border-red-200' },
     degraded: { icon: AlertTriangle, label: '异常', className: 'bg-amber-50 text-amber-700 border-amber-200' },
     active: { icon: CheckCircle, label: '正常', className: 'bg-green-50 text-green-700 border-green-200' },
     disabled: { icon: XCircle, label: '已禁用', className: 'bg-red-50 text-red-700 border-red-200' },
@@ -136,7 +136,7 @@ export default function CloudOverviewPage() {
               <StatusBadge status={user?.role || 'operator'} />
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-[12px] text-text-tertiary">租户</span>
+              <span className="text-[12px] text-text-tertiary">所属机构</span>
               <span className="text-[12px] font-mono text-text-secondary">{user?.tenantId || '未知'}</span>
             </div>
             <div className="flex items-center justify-between">
@@ -155,13 +155,13 @@ export default function CloudOverviewPage() {
                 <StatusBadge status={system.alive ? 'available' : 'unavailable'} />
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-[12px] text-text-tertiary">认证保护</span>
+                <span className="text-[12px] text-text-tertiary">登录保护</span>
                 <span className={`text-[12px] font-medium ${system.authRequired ? 'text-green-600' : 'text-text-tertiary'}`}>
                   {system.authRequired ? '已开启' : '未开启'}
                 </span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-[12px] text-text-tertiary">本地运行时</span>
+                <span className="text-[12px] text-text-tertiary">本地运行环境</span>
                 <StatusBadge status={system.runtime} />
               </div>
               {system.runtimeError && (
@@ -214,7 +214,7 @@ export default function CloudOverviewPage() {
           <div className="text-[12px] text-text-secondary leading-relaxed space-y-2">
             <p>DaoPai V3 Cloud Platform 当前处于<strong>基础认证与管理入口</strong>阶段。</p>
             <p>本地浏览器执行能力后续将迁移到 Local Agent 本地执行端。</p>
-            <p className="text-text-tertiary">EasyBR 依赖暂不在本阶段删除，后续专项清理。</p>
+            <p className="text-text-tertiary">本地浏览器执行端依赖暂不在本阶段删除，后续专项清理。</p>
           </div>
         </Card>
 

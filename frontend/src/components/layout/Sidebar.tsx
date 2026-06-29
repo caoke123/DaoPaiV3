@@ -3,13 +3,14 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   PackageOpen, Truck, ClipboardCheck, LayoutList, Settings, Combine,
-  ChevronLeft, ChevronRight, Cloud, Building2,
+  ChevronLeft, ChevronRight, MonitorCog,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { NAV_ITEMS } from '../../lib/mock-data';
+import { useAuth } from '../../stores/authStore';
 
 const iconMap: Record<string, React.ElementType> = {
-  PackageOpen, Truck, ClipboardCheck, LayoutList, Settings, Combine, Cloud, Building2,
+  PackageOpen, Truck, ClipboardCheck, LayoutList, Settings, Combine, MonitorCog,
 };
 
 interface Props {
@@ -20,6 +21,13 @@ export default function Sidebar({ onCollapsedChange }: Props) {
   const [collapsed, setCollapsed] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
+  const { user } = useAuth();
+
+  // Phase 3-G-2: 按角色过滤导航项
+  const filteredItems = NAV_ITEMS.filter(item => {
+    if (!item.roles || item.roles.length === 0) return true;
+    return user && item.roles.includes(user.role);
+  });
 
   return (
     <motion.aside
@@ -30,7 +38,7 @@ export default function Sidebar({ onCollapsedChange }: Props) {
     >
       {/* Navigation items */}
       <nav className="flex-1 py-3 px-2 space-y-0.5 overflow-y-auto">
-        {NAV_ITEMS.map(item => {
+        {filteredItems.map(item => {
           if (item.type === 'section') {
             return (
               <div key={item.key} className="pt-3 pb-1 first:pt-0">

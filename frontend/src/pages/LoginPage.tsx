@@ -4,25 +4,29 @@
 //   - 用户名 + 密码表单
 //   - 登录中 loading 状态
 //   - 错误提示
-//   - 登录成功跳转 /arrival
+//   - 登录成功跳转原页面或 /arrival（Phase 3-G-2）
 
 import { useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import { useAuth } from '../stores/authStore';
 
 export default function LoginPage() {
   const { login, isAuthenticated } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // 从路由 state 获取来源路径（ProtectedRoute 写入）
+  const from = (location.state as any)?.from?.pathname || '/arrival';
+
   // 已登录时跳转
   if (isAuthenticated) {
-    navigate('/arrival', { replace: true });
+    navigate(from, { replace: true });
     return null;
   }
 
@@ -36,7 +40,7 @@ export default function LoginPage() {
     setError('');
     try {
       await login(username.trim(), password);
-      navigate('/arrival', { replace: true });
+      navigate(from, { replace: true });
     } catch (err) {
       setError((err as Error).message || '登录失败，请检查网络连接');
     } finally {

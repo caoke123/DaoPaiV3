@@ -1564,4 +1564,30 @@ export class PgDatabase {
       createdAt: r.created_at,
     }));
   }
+
+  /** Phase 3-G: 获取租户下所有用户（不返回 password_hash） */
+  async getUsersByTenant(tenantId: string): Promise<Array<{
+    id: string;
+    tenantId: string;
+    username: string;
+    role: string;
+    status: string;
+    createdAt: string;
+    updatedAt: string;
+  }>> {
+    const result = await this.pool.query(
+      `SELECT id, tenant_id, username, role, status, created_at, updated_at
+       FROM users WHERE tenant_id = $1 ORDER BY username`,
+      [tenantId]
+    );
+    return result.rows.map((r: any) => ({
+      id: r.id,
+      tenantId: r.tenant_id,
+      username: r.username,
+      role: r.role,
+      status: r.status,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    }));
+  }
 }

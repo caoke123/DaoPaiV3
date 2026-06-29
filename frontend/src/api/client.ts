@@ -1027,3 +1027,26 @@ export async function getTenantWorkstations(): Promise<{ tenantId: string; works
   }
   return resp.json();
 }
+
+// ── Phase 3-G: Cloud 用户信息 API ──
+
+/** 用户信息 */
+export interface UserInfo {
+  id: string;
+  tenantId: string;
+  username: string;
+  role: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** GET /api/cloud/users — 获取当前租户下用户列表 */
+export async function getTenantUsers(): Promise<{ tenantId: string; users: UserInfo[] }> {
+  const resp = await fetchWithAuth(`${BASE}/cloud/users`);
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ error: '请求失败' }));
+    throw new Error(err.error || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}

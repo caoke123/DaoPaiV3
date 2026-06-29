@@ -3,10 +3,13 @@
 // 提供：
 //   - user / accessToken / refreshToken / isAuthenticated / isLoading
 //   - login / logout / refresh / loadMe 方法
+//   - ProtectedRoute 组件（Phase 3-G-2）
 //
 // token 存储在 localStorage，页面刷新后可恢复。
 
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
+import { Navigate, useLocation } from 'react-router-dom';
+import { Loader2 } from 'lucide-react';
 
 // ── 类型 ──
 
@@ -289,4 +292,31 @@ export function triggerAuthFailure() {
   clearAllTokens();
   if (onAuthFailure) onAuthFailure();
   else window.location.href = '/login';
+}
+
+// ── Phase 3-G-2: ProtectedRoute 路由保护组件 ──
+
+/**
+ * 统一路由保护：
+ *   1. isLoading 期间显示 loading spinner
+ *   2. 未认证时跳转 /login（携带 from 路径供登录后回跳）
+ *   3. 已认证则渲染子路由
+ */
+export function ProtectedRoute({ children }: { children: ReactNode }) {
+  const { isAuthenticated, isLoading } = useAuth();
+  const location = useLocation();
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-[var(--bg)]">
+        <Loader2 className="w-6 h-6 animate-spin text-[var(--text-3)]" />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+
+  return <>{children}</>;
 }

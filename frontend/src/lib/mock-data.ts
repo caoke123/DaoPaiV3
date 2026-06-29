@@ -7,6 +7,8 @@ export interface NavItem {
   icon?: string;
   path?: string;
   type: 'item' | 'section' | 'separator';
+  /** Phase 3-G-2: 仅指定角色可见，不传则所有角色可见 */
+  roles?: string[];
 }
 
 export const NAV_ITEMS: NavItem[] = [
@@ -19,10 +21,9 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'sec-mon',    label: '监控中心',  type: 'section' },
   { key: 'tasks',      label: '任务中心',    icon: 'LayoutList',        path: '/tasks',      type: 'item' },
   { key: 'sep-2',      label: '',           type: 'separator' },
-  { key: 'sec-sys',    label: '系统',      type: 'section' },
-  { key: 'cloud',      label: '云端总览',    icon: 'Cloud',             path: '/cloud',      type: 'item' },
-  { key: 'organization', label: '组织信息',    icon: 'Building2',         path: '/organization', type: 'item' },
-  { key: 'settings',   label: '系统设置',    icon: 'Settings',          path: '/settings',   type: 'item' },
+  { key: 'sec-sys',    label: '系统',      type: 'section', roles: ['super_admin', 'tenant_admin'] },
+  { key: 'system',     label: '系统管理',    icon: 'MonitorCog',        path: '/system',      type: 'item', roles: ['super_admin', 'tenant_admin'] },
+  { key: 'settings',   label: '设置中心',    icon: 'Settings',          path: '/settings',   type: 'item', roles: ['super_admin', 'tenant_admin'] },
 ];
 
 export interface MockUser {

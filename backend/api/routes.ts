@@ -2025,6 +2025,20 @@ router.get('/api/cloud/workstations', async (req: Request, res: Response) => {
   }
 });
 
+/** GET /api/cloud/users — 当前租户下用户列表（只读，不含 password_hash） */
+router.get('/api/cloud/users', async (req: Request, res: Response) => {
+  try {
+    const tenantId = getTenantId(req);
+    const pg = PgDatabase.getInstance();
+    const users = await pg.getUsersByTenant(tenantId);
+
+    res.json({ tenantId, users });
+  } catch (e) {
+    console.error('[GET /api/cloud/users] 失败:', (e as Error).message);
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
+
 /**
  * 启动时清理所有僵尸任务
  * 服务重启后调用：查询 DB 中所有 status='running' 的任务 → 更新为 failed → 记录 Service restarted unexpectedly
