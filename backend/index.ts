@@ -36,6 +36,7 @@ import { BrowserPool } from './browser/BrowserPool';
 import { PopupManager } from './browser/PopupManager';
 import { SessionManager } from './browser/SessionManager';
 import { WindowLockManager } from './browser/WindowLockManager';
+import { runtimeStatus } from './browser/runtime/RuntimeStatus';
 import { Database } from './db/Database';
 import { PgDatabase } from './db/PgDatabase';
 import { runMigrations } from './db/migrations';
@@ -337,45 +338,52 @@ async function main(): Promise<void> {
     })();
   });
 
-  // 初始化 BrowserPool（异步，不阻塞服务启动）
-  console.log('[启动] 初始化 BrowserPool...');
-  const pool = BrowserPool.getInstance();
-  pool.initialize().then(() => {
-    // Phase D-2B: 注入 autoRelogin 到 SessionManager（用于 Session 自动恢复）
-    const sessionMgr = SessionManager.getInstance();
-    sessionMgr.setRelogin(async (pageToCheck) => {
-      const bp = BrowserPool.getInstance();
-      // 遍历所有连接，找到匹配的 page
-      for (const [, conn] of (bp as any).connections) {
-        if (conn.page === pageToCheck) {
-          try {
-            await (bp as any).checkAndAutoLogin(pageToCheck, conn.windowInfo.name);
-            return true;
-          } catch {
-            return false;
+  // Phase 3-D-2: 初始化 BrowserPool（best-effort，不阻塞 Express 启动）
+  // 失败时 runtimeStatus 标记为 unavailable，Express 仍正常服务 Auth / 任务中心
+  console.log('[启动] 初始化 BrowserPool（best-effort）...');
+  let pool: BrowserPool;
+  try {
+    pool = BrowserPool.getInstance();
+    pool.initialize().then(() => {
+      runtimeStatus.markAvailable();
+      // Phase D-2B: 注入 autoRelogin 到 SessionManager（用于 Session 自动恢复）
+      const sessionMgr = SessionManager.getInstance();
+      sessionMgr.setRelogin(async (pageToCheck) => {
+        const bp = BrowserPool.getInstance();
+        // 遍历所有连接，找到匹配的 page
+        for (const [, conn] of (bp as any).connections) {
+          if (conn.page === pageToCheck) {
+            try {
+              await (bp as any).checkAndAutoLogin(pageToCheck, conn.windowInfo.name);
+              return true;
+            } catch {
+              return false;
+            }
           }
         }
+        return false;
+      });
+
+      // Phase D-2B: 为所有已连接窗口启动心跳（60 秒保活）
+      const connectedCount = (pool as any).connections.size;
+      for (const [windowId, conn] of (pool as any).connections) {
+        if (conn.windowInfo.is_connected === 1) {
+          sessionMgr.startHeartbeat(windowId, conn.page);
+        }
       }
-      return false;
+      console.log(`[SessionManager] 已为 ${connectedCount} 个窗口启动心跳`);
+    }).catch(e => {
+      runtimeStatus.markUnavailable(e.message);
+      console.error('[启动] BrowserPool 初始化失败（不影响 Express）:', e.message);
+      console.error('[启动] 请确认 EasyBR 已开启所有窗口');
     });
 
-    // Phase D-2B: 为所有已连接窗口启动心跳（60 秒保活）
-    const connectedCount = (pool as any).connections.size;
-    for (const [windowId, conn] of (pool as any).connections) {
-      if (conn.windowInfo.is_connected === 1) {
-        sessionMgr.startHeartbeat(windowId, conn.page);
-      }
-    }
-    console.log(`[SessionManager] 已为 ${connectedCount} 个窗口启动心跳`);
-  }).catch(e => {
-    console.error('[启动] BrowserPool 初始化失败:', e.message);
-    console.error('[启动] 请确认 EasyBR 已开启所有窗口');
-  });
-
-  // Phase G-2: 周期健康巡检（30 秒）— 由 HealthMonitor 管理
-  // 检测窗口是否存在、CDP 是否正常、连接是否有效
-  // 同步前端窗口状态（窗口被手动关闭、员工改名、浏览器异常等场景）
-  pool.startHealthMonitor(30 * 1000);
+    // Phase G-2: 周期健康巡检（30 秒）— 由 HealthMonitor 管理
+    pool.startHealthMonitor(30 * 1000);
+  } catch (e) {
+    runtimeStatus.markUnavailable((e as Error).message);
+    console.error('[启动] BrowserPool 初始化失败（不影响 Express）:', (e as Error).message);
+  }
 
   // Phase G-2: 超时锁自动释放巡检（60 秒）
   // 发现窗口已锁定且超过 5 分钟，自动释放，避免任务异常退出导致窗口永久锁死
@@ -435,6 +443,11 @@ async function main(): Promise<void> {
 }
 
 main().catch(e => {
-  console.error('启动失败:', e);
-  process.exit(1);
+  console.error('[启动] 致命错误:', e);
+  // 只有端口占用才退出，其他错误记录但不退出
+  if (e && (e as any).message && (e as any).message.includes('EADDRINUSE')) {
+    process.exit(1);
+  }
+  // 非致命错误不退出，Express 可能已启动
+  console.error('[启动] 非致命错误，服务可能已部分启动');
 });

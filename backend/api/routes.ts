@@ -13,6 +13,7 @@ import { EasyBRClient } from '../easybr/EasyBRClient';
 import { taskLogManager } from '../utils/TaskLogManager';
 import { taskEventBus, type TaskEvent } from '../utils/TaskEventBus';
 import { RuntimeMetrics } from '../runtime/RuntimeMetrics';
+import { runtimeStatus } from '../browser/runtime/RuntimeStatus';
 import { SettingsManager } from '../config/SettingsManager';
 import { isLoginCapableWindow } from '../config/SettingsManager';
 import { PgDatabase } from '../db/PgDatabase';
@@ -79,24 +80,56 @@ export const router = Router();
 // ── 窗口状态接口 ──────────────────────────────────────
 
 /** GET /api/status — 所有窗口连接状态（只读，不触发refresh） */
-router.get('/api/status', async (_req: Request, res: Response) => {
-  const pool = BrowserPool.getInstance();
+// ── Phase 3-D-2: Runtime 可用性检查（执行接口保护）──
 
-  const windows = pool.listWindows();
-  res.json({
-    total: windows.length,
-    connected: windows.filter(w => w.is_connected).length,
-    windows: windows.map(w => ({
-      id: w.id,
-      name: w.name,
-      role: w.role,
-      site: w.site,
-      staffName: w.staff_name,
-      isConnected: !!w.is_connected,
-      cdpPort: w.cdp_port,
-    })),
-    runtimeMetrics: RuntimeMetrics.getInstance().snapshot(),
-  });
+function requireRuntimeAvailable(res: Response): boolean {
+  if (!runtimeStatus.isAvailable()) {
+    const state = runtimeStatus.getState();
+    res.status(503).json({
+      error: 'BROWSER_RUNTIME_UNAVAILABLE',
+      message: '本地浏览器运行时不可用，请检查 EasyBR 是否已启动',
+      runtime: state.health,
+      runtimeError: state.error,
+    });
+    return false;
+  }
+  return true;
+}
+
+router.get('/api/status', async (_req: Request, res: Response) => {
+  const runtime = runtimeStatus.getSummary();
+  try {
+    const pool = BrowserPool.getInstance();
+    const windows = pool.listWindows();
+    res.json({
+      alive: true,
+      runtime: runtime.runtime,
+      runtimeError: runtime.runtimeError,
+      total: windows.length,
+      connected: windows.filter(w => w.is_connected).length,
+      windows: windows.map(w => ({
+        id: w.id,
+        name: w.name,
+        role: w.role,
+        site: w.site,
+        staffName: w.staff_name,
+        isConnected: !!w.is_connected,
+        cdpPort: w.cdp_port,
+      })),
+      runtimeMetrics: RuntimeMetrics.getInstance().snapshot(),
+    });
+  } catch (e) {
+    // BrowserPool 不可用也返回 alive=true，runtime 状态显示 unavailable
+    res.json({
+      alive: true,
+      runtime: runtime.runtime,
+      runtimeError: runtime.runtimeError,
+      total: 0,
+      connected: 0,
+      windows: [],
+      error: (e as Error).message,
+    });
+  }
 });
 
 /** GET /api/windows — 窗口列表（含角色、网点、连接状态） */
@@ -159,6 +192,7 @@ router.get('/api/diag/connections', async (_req: Request, res: Response) => {
 
 /** POST /api/windows/:browerid/toggle — 切换窗口开关状态 */
 router.post('/api/windows/:browerid/toggle', async (req: Request, res: Response) => {
+  if (!requireRuntimeAvailable(res)) return;
   const { browerid } = req.params;
   if (!browerid) {
     res.status(400).json({ error: '缺少 browerid 参数' });
@@ -176,6 +210,7 @@ router.post('/api/windows/:browerid/toggle', async (req: Request, res: Response)
 
 /** POST /api/windows/:browerid/cleanup-pages — 清理多余标签页 */
 router.post('/api/windows/:browerid/cleanup-pages', async (req: Request, res: Response) => {
+  if (!requireRuntimeAvailable(res)) return;
   const { browerid } = req.params;
   if (!browerid) {
     res.status(400).json({ error: '缺少 browerid 参数' });
@@ -193,6 +228,7 @@ router.post('/api/windows/:browerid/cleanup-pages', async (req: Request, res: Re
 
 /** POST /api/windows/:browerid/ensure-ready — P0 前置检查（任务前必须调用） */
 router.post('/api/windows/:browerid/ensure-ready', async (req: Request, res: Response) => {
+  if (!requireRuntimeAvailable(res)) return;
   const { browerid } = req.params;
   if (!browerid) {
     res.status(400).json({ error: '缺少 browerid 参数' });
@@ -212,6 +248,7 @@ router.post('/api/windows/:browerid/ensure-ready', async (req: Request, res: Res
 
 /** POST /api/windows/init — 提交窗口初始化任务 */
 router.post('/api/windows/init', async (req: Request, res: Response) => {
+  if (!requireRuntimeAvailable(res)) return;
   try {
     const { site_id, window_id } = req.body as { site_id: string; window_id: string };
     if (!site_id || !window_id) {
@@ -527,6 +564,7 @@ router.get('/api/sites/:siteId/windows', async (req: Request, res: Response) => 
 
 /** POST /api/sites/:siteId/windows/launch-all — 一键启动该网点全部窗口 */
 router.post('/api/sites/:siteId/windows/launch-all', async (req: Request, res: Response) => {
+  if (!requireRuntimeAvailable(res)) return;
   try {
     const { siteId } = req.params;
     const sm = SettingsManager.getInstance();
@@ -727,6 +765,7 @@ router.post('/api/sites/:siteId/windows/launch-all', async (req: Request, res: R
 
 /** POST /api/easybr/open-browser — 直接调用 EasyBR 打开/聚焦指定浏览器窗口 */
 router.post('/api/easybr/open-browser', async (req: Request, res: Response) => {
+  if (!requireRuntimeAvailable(res)) return;
   try {
     const { browserId } = req.body as { browserId: string };
     if (!browserId) {
@@ -911,6 +950,7 @@ async function validateAssignmentsBelongToSite(
  *   2. { site, waybillNos }  — 旧兼容模式，自动选择单个在线 Worker
  */
 router.post('/api/operations/arrive', async (req: Request, res: Response) => {
+  if (!requireRuntimeAvailable(res)) return;
   const db = Database.getInstance();
   const pg = PgDatabase.getInstance();
 
@@ -1024,6 +1064,7 @@ router.post('/api/operations/arrive', async (req: Request, res: Response) => {
 
 /** POST /api/operations/dispatch — 提交派件任务（多员工并发） */
 router.post('/api/operations/dispatch', async (req: Request, res: Response) => {
+  if (!requireRuntimeAvailable(res)) return;
   const db = Database.getInstance();
   const pg = PgDatabase.getInstance();
 
@@ -1149,6 +1190,7 @@ router.post('/api/operations/dispatch', async (req: Request, res: Response) => {
 
 /** POST /api/operations/integrated — 提交到派一体任务（多员工并发） */
 router.post('/api/operations/integrated', async (req: Request, res: Response) => {
+  if (!requireRuntimeAvailable(res)) return;
   const db = Database.getInstance();
   const pg = PgDatabase.getInstance();
 
@@ -1274,6 +1316,7 @@ router.post('/api/operations/integrated', async (req: Request, res: Response) =>
 
 /** POST /api/operations/sign — 提交签收任务（Phase E-1: 预览模式，多员工并发） */
 router.post('/api/operations/sign', async (req: Request, res: Response) => {
+  if (!requireRuntimeAvailable(res)) return;
   const db = Database.getInstance();
   const pg = PgDatabase.getInstance();
 
@@ -1402,12 +1445,18 @@ router.post('/api/operations/sign', async (req: Request, res: Response) => {
 /** GET /api/operations/stats — 服务端聚合统计 + 系统状态（必须在 /:taskId 之前注册） */
 router.get('/api/operations/stats', async (req: Request, res: Response) => {
   try {
-    const bp = BrowserPool.getInstance();
+    // Phase 3-D-2: BrowserPool 不可用时仍返回有效统计
+    let onlineWindows = 0;
+    let easybrConnected = false;
+    try {
+      const bp = BrowserPool.getInstance();
+      onlineWindows = bp.getConnectedCount();
+      easybrConnected = onlineWindows > 0;
+    } catch (bpErr) {
+      console.warn('[GET /api/operations/stats] BrowserPool 不可用:', (bpErr as Error).message);
+    }
     const engine = AssignmentEngine.getInstance();
-
-    const onlineWindows = bp.getConnectedCount();
     const activeWorkers = engine.getActiveWorkerCount();
-    const easybrConnected = onlineWindows > 0;
 
     // ★ 交付前加固：PG 不可用时降级到本地 SQLite 统计，不再返回 500
     //   优先级：PG → SQLite Database → 空统计
