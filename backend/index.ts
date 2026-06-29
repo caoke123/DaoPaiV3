@@ -42,7 +42,7 @@ import { runMigrations } from './db/migrations';
 import { SettingsManager } from './config/SettingsManager';
 import { AssignmentEngine } from './modules/assignment-engine/AssignmentEngine';
 import { EasyBRClient } from './easybr/EasyBRClient';
-import { router, cleanupRunningTasks } from './api/routes';
+import { router } from './api/routes';
 import { windowRuntimeRouter } from './api/windowRuntimeRoutes';
 import { pocRouter, PlaywrightRuntime } from './playwright-runtime';
 import { pocAdapterRouter, adapterTestRouter } from './window-adapter';
@@ -206,7 +206,8 @@ async function main(): Promise<void> {
   // 扫描所有 status='running' 的任务，自动标记为 failed
   // 兼容所有任务类型，禁止业务特判
   // Phase H: 同时清理超时锁 → 服务重启后窗口锁自动释放
-  AssignmentEngine.recoverRunningTasks();
+  // Phase 2-C-1: 移至 PG init 之后执行（recoverRunningTasks 已改为 async，需要 PG 可用）
+  //   → 见 app.listen 回调中的 async IIFE
 
   // Phase H: 启动时清理所有可能残留的窗口锁
   const lockManager = WindowLockManager.getInstance();
@@ -297,6 +298,12 @@ async function main(): Promise<void> {
         if (cfg.sites.length > 0) {
           await pg.syncSitesFromSettings(cfg.sites);
           console.log(`[启动] 已同步 ${cfg.sites.length} 个网点到 PG sites 表`);
+        }
+
+        // 4. Phase 2-C-1: 僵尸任务恢复（PG 已就绪，优先写 PG）
+        const recovered = await AssignmentEngine.recoverRunningTasks();
+        if (recovered > 0) {
+          console.log(`[启动] 僵尸任务恢复完成: ${recovered} 个任务 running → failed`);
         }
       } catch (e) {
         console.warn('[启动] PG 初始化失败（不影响启动，JSON 模式仍可用）:', (e as Error).message);

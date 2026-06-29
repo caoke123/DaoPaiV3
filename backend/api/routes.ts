@@ -1923,7 +1923,8 @@ router.get('/api/operations', async (req: Request, res: Response) => {
  * 启动时清理所有僵尸任务
  * 服务重启后调用：查询 DB 中所有 status='running' 的任务 → 更新为 failed → 记录 Service restarted unexpectedly
  * Phase H: 原空实现已替换为调用 AssignmentEngine.recoverRunningTasks()
+ * Phase 2-C-1: recoverRunningTasks 已改为 async，本函数同步适配
  */
-export function cleanupRunningTasks(): void {
-  AssignmentEngine.recoverRunningTasks();
+export async function cleanupRunningTasks(): Promise<number> {
+  return AssignmentEngine.recoverRunningTasks();
 }
