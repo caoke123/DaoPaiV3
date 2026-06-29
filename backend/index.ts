@@ -375,7 +375,7 @@ async function main(): Promise<void> {
     }).catch(e => {
       runtimeStatus.markUnavailable(e.message);
       console.error('[启动] BrowserPool 初始化失败（不影响 Express）:', e.message);
-      console.error('[启动] 请确认 EasyBR 已开启所有窗口');
+      console.error('[启动] 请确认本地浏览器执行端已开启所有窗口');
     });
 
     // Phase G-2: 周期健康巡检（30 秒）— 由 HealthMonitor 管理

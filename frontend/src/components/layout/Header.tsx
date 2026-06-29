@@ -44,6 +44,7 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
   const {
     sites, activeSiteId, setActiveSiteId,
     siteWindows, siteName, easybrAbnormal, easybrMessage,
+    browserRuntimeStatus, browserRuntimeError,
     refresh: fetchSiteWindows,
     configError,
     runtimeMode, isPlaywright,
@@ -258,7 +259,7 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
 
     // legacy 模式：原 EasyBR initWindow 流程
     if (!sw.browserId) {
-      setLaunchMsg(`窗口 ${staffName} 未匹配到EasyBR浏览器配置，请先在EasyBR中创建对应浏览器窗口`);
+      setLaunchMsg(`窗口 ${staffName} 未匹配到浏览器配置，请先在设置中添加对应窗口`);
       return;
     }
     markInitializing(sw, '');
@@ -528,7 +529,7 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
                     : isOffline
                       ? isPlaywright
                         ? '\n点击启动 Chrome 窗口'
-                        : (hasBrowserId ? '\n点击启动' : '\n未匹配到EasyBR浏览器，请先在EasyBR中创建')
+                        : (hasBrowserId ? '\n点击启动' : '\n未匹配到浏览器配置，请先在设置中添加')
                       : isPlaywright
                         ? (effectiveStatus === 'ready'
                             ? '\nChrome 窗口已打开'
@@ -622,11 +623,11 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
           </div>
         )}
 
-        {/* legacy_easybr 模式：EasyBR 状态异常提示 + 手动重连按钮 */}
+        {/* legacy_easybr 模式：运行时状态异常提示 + 手动重连按钮 */}
         {!isPlaywright && easybrAbnormal && (
           <div className="flex items-center gap-1.5 shrink-0" title={easybrMessage}>
             <AlertTriangle className="w-3 h-3 text-warning" />
-            <span className="text-[11px] text-warning font-medium">EasyBR 连接异常</span>
+            <span className="text-[11px] text-warning font-medium">运行时连接异常</span>
             <button
               onClick={handleReconnectEasyBR}
               disabled={reconnecting}
@@ -634,7 +635,7 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
                 bg-warning/10 text-warning border border-warning/30
                 hover:bg-warning/20 transition-colors
                 disabled:opacity-50 disabled:cursor-not-allowed"
-              title={`${easybrMessage || 'EasyBR 连接异常'}，重启 EasyBR 后点击此按钮立即重连`}
+              title={`${easybrMessage || '运行时连接异常'}，重启本地执行端后点击此按钮立即重连`}
             >
               {reconnecting ? (
                 <Loader2 className="w-2.5 h-2.5 animate-spin" />
@@ -682,6 +683,18 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
 
         <span className="text-[12px] text-text-secondary font-mono">{timeStr}</span>
       </div>
+
+      {/* Phase 3-D-3: 本地浏览器运行时未就绪提示 */}
+      {browserRuntimeStatus !== 'available' && (
+        <div className="topbar-banner">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          <span className="text-[12px] leading-tight">
+            {browserRuntimeStatus === 'unavailable'
+              ? '本地浏览器运行时未就绪，请启动本地执行端后重试。任务中心历史数据仍可查看。'
+              : '本地浏览器运行时状态异常，部分窗口或任务可能不可用。'}
+          </span>
+        </div>
+      )}
     </header>
   );
 }

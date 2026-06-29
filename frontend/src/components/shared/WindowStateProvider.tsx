@@ -7,10 +7,12 @@ import {
   getSiteWindows,
   getSitePlaywrightWindows,
   getWindowRuntimeMode,
+  getRuntimeStatus,
   type SiteConfig,
   type SiteWindowState,
   type PlaywrightSiteWindowState,
   type WindowRuntimeMode,
+  type BrowserRuntimeStatus,
 } from '../../api/client';
 
 export interface WindowStateContextValue {
@@ -22,6 +24,10 @@ export interface WindowStateContextValue {
   // runtimeMode（playwright / legacy_easybr）
   runtimeMode: WindowRuntimeMode;
   isPlaywright: boolean;
+
+  // Phase 3-D-3: 本地浏览器运行时状态
+  browserRuntimeStatus: BrowserRuntimeStatus;
+  browserRuntimeError: string | null;
 
   // 4 态窗口数据（playwright 模式下含 p0Passed/pageCount 等诊断字段）
   siteWindows: PlaywrightSiteWindowState[];
@@ -60,6 +66,8 @@ export function WindowStateProvider({ children }: { children: ReactNode }) {
   const [easybrMessage, setEasybrMessage] = useState('');
   const [configError, setConfigError] = useState(false);
   const [fetchError, setFetchError] = useState('');
+  const [browserRuntimeStatus, setBrowserRuntimeStatus] = useState<BrowserRuntimeStatus>('unavailable');
+  const [browserRuntimeError, setBrowserRuntimeError] = useState<string | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -100,6 +108,22 @@ export function WindowStateProvider({ children }: { children: ReactNode }) {
     loadRuntimeMode();
     loadConfig();
   }, [loadRuntimeMode, loadConfig]);
+
+  // 0.5. Phase 3-D-3: 轮询本地浏览器运行时状态（30s 间隔，不与窗口状态混在一起）
+  useEffect(() => {
+    const fetchRuntime = async () => {
+      try {
+        const status = await getRuntimeStatus();
+        setBrowserRuntimeStatus(status.runtime);
+        setBrowserRuntimeError(status.runtimeError);
+      } catch {
+        // 静默失败，保持上次状态
+      }
+    };
+    fetchRuntime();
+    const timer = setInterval(fetchRuntime, 30_000);
+    return () => clearInterval(timer);
+  }, []);
 
   // 2. 单一轮询（5s）— 按 runtimeMode 分支数据源
   const fetchSiteWindows = useCallback(async () => {
@@ -156,6 +180,8 @@ export function WindowStateProvider({ children }: { children: ReactNode }) {
     setActiveSiteId,
     runtimeMode,
     isPlaywright: runtimeMode === 'playwright',
+    browserRuntimeStatus,
+    browserRuntimeError,
     siteWindows,
     siteName,
     easybrAbnormal,

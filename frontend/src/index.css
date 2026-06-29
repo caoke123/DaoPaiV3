@@ -267,6 +267,7 @@
   .topbar {
     display: flex;
     align-items: center;
+    flex-wrap: wrap; /* Phase 3-D-3: 允许 banner 换行 */
     background: var(--surface);
     border-bottom: 1px solid var(--border);
     padding: 0;
@@ -333,6 +334,20 @@
     gap: 6px;
     padding: 0 16px;
     flex-shrink: 0;
+  }
+
+  /* Phase 3-D-3: 本地浏览器运行时未就绪提示横幅 */
+  .topbar-banner {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 5px 16px;
+    background: oklch(0.54 0.18 29.5 / 0.12);
+    color: oklch(0.48 0.16 29.5);
+    border-bottom: 1px solid oklch(0.54 0.18 29.5 / 0.18);
+    flex-shrink: 0;
+    order: 999; /* 始终在 header 最底部 */
   }
 
   /* ─────────────────────────────────

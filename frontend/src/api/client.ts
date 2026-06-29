@@ -116,6 +116,28 @@ export interface WindowInfo {
   enabled: boolean;
 }
 
+/** Phase 3-D-3: 本地浏览器运行时状态 */
+export type BrowserRuntimeStatus = 'available' | 'unavailable' | 'degraded';
+
+export interface RuntimeStatusResponse {
+  alive: boolean;
+  runtime: BrowserRuntimeStatus;
+  runtimeError: string | null;
+  total: number;
+  connected: number;
+  windows: unknown[];
+  error?: string;
+}
+
+/** GET /api/status — 获取运行时状态 */
+export async function getRuntimeStatus(): Promise<RuntimeStatusResponse> {
+  const resp = await fetch('/api/status');
+  if (!resp.ok) {
+    return { alive: false, runtime: 'unavailable', runtimeError: '无法获取状态', total: 0, connected: 0, windows: [] };
+  }
+  return resp.json();
+}
+
 /** 运行时指标快照 */
 export interface RuntimeMetricsSnapshot {
   popupDismissCount: number;
@@ -422,8 +444,8 @@ export async function submitTask(
     body: JSON.stringify(payload),
   });
   if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ error: '请求失败' }));
-    throw new Error(err.error || `HTTP ${resp.status}`);
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.message || err.error || `HTTP ${resp.status}`);
   }
   return resp.json();
 }
@@ -656,8 +678,8 @@ export async function initWindow(siteId: string, windowId: string): Promise<Init
     body: JSON.stringify({ site_id: siteId, window_id: windowId }),
   });
   if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ error: '请求失败' }));
-    throw new Error(err.error || `HTTP ${resp.status}`);
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.message || err.error || `HTTP ${resp.status}`);
   }
   return resp.json();
 }
@@ -747,8 +769,8 @@ export async function launchAllWindows(siteId: string): Promise<LaunchAllRespons
     method: 'POST',
   });
   if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ error: '请求失败' }));
-    throw new Error(err.error || `HTTP ${resp.status}`);
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.message || err.error || `HTTP ${resp.status}`);
   }
   return resp.json();
 }
@@ -881,8 +903,8 @@ export async function openBrowser(browserId: string): Promise<{ ok: boolean; ws:
     body: JSON.stringify({ browserId }),
   });
   if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ error: '请求失败' }));
-    throw new Error(err.error || `HTTP ${resp.status}`);
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.message || err.error || `HTTP ${resp.status}`);
   }
   return resp.json();
 }

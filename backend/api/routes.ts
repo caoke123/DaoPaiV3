@@ -87,7 +87,7 @@ function requireRuntimeAvailable(res: Response): boolean {
     const state = runtimeStatus.getState();
     res.status(503).json({
       error: 'BROWSER_RUNTIME_UNAVAILABLE',
-      message: '本地浏览器运行时不可用，请检查 EasyBR 是否已启动',
+      message: '本地浏览器运行时未就绪，请启动本地执行端后重试',
       runtime: state.health,
       runtimeError: state.error,
     });
@@ -259,7 +259,7 @@ router.post('/api/windows/init', async (req: Request, res: Response) => {
     const ebCheck = EasyBRClient.getInstance();
     const health = await ebCheck.checkHealth();
     if (!health.ok) {
-      return res.status(503).json({ error: `EasyBR 服务未就绪: ${health.message}。请先打开 EasyBR 软件` });
+      return res.status(503).json({ error: `本地浏览器运行时未就绪: ${health.message}。请先启动本地执行端` });
     }
 
     // 获取窗口信息（从数据库查找名称/员工）
@@ -583,7 +583,7 @@ router.post('/api/sites/:siteId/windows/launch-all', async (req: Request, res: R
     const ebHealth = EasyBRClient.getInstance();
     const health = await ebHealth.checkHealth();
     if (!health.ok) {
-      return res.status(503).json({ error: `EasyBR 服务未就绪: ${health.message}。请先打开 EasyBR 软件` });
+      return res.status(503).json({ error: `本地浏览器运行时未就绪: ${health.message}。请先启动本地执行端` });
     }
 
     const eb = EasyBRClient.getInstance();
@@ -775,7 +775,7 @@ router.post('/api/easybr/open-browser', async (req: Request, res: Response) => {
     // ★ 先检测 EasyBR 健康
     const health = await eb.checkHealth();
     if (!health.ok) {
-      return res.status(503).json({ error: `EasyBR 服务未就绪: ${health.message}。请先打开 EasyBR 软件` });
+      return res.status(503).json({ error: `本地浏览器运行时未就绪: ${health.message}。请先启动本地执行端` });
     }
     const result = await eb.openBrower(browserId);
     res.json({ ok: true, ws: result.ws, http: result.http });
