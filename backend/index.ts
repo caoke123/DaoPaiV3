@@ -44,7 +44,7 @@ import { AssignmentEngine } from './modules/assignment-engine/AssignmentEngine';
 import { EasyBRClient } from './easybr/EasyBRClient';
 import { router } from './api/routes';
 import { requestContext } from './api/middleware/requestContext';
-import { authMiddleware } from './auth';
+import { authMiddleware, requireUserIfAuthRequired } from './auth';
 import { authRouter } from './auth/authRoutes';
 import { windowRuntimeRouter } from './api/windowRuntimeRoutes';
 import { pocRouter, PlaywrightRuntime } from './playwright-runtime';
@@ -238,7 +238,14 @@ async function main(): Promise<void> {
   app.use(requestContext);
 
   // 注册 API 路由
-  app.use(authRouter);   // Phase 3-B: Auth 路由（必须在 authMiddleware 之后）
+  app.use(authRouter);   // Phase 3-B: Auth 路由（必须在 authMiddleware 之后，且必须在 requireUserIfAuthRequired 之前）
+
+  // Phase 3-C: 业务 API 认证保护（AUTH_REQUIRED=false 时兼容 anonymous）
+  // 必须在 authRouter 之后、router 之前，确保：
+  //   - /api/auth/* 不受保护（authRouter 已先处理）
+  //   - 业务 API 受 AUTH_REQUIRED 开关控制
+  app.use(requireUserIfAuthRequired);
+
   app.use(router);
 
   // Phase 4-B: Window Runtime 适配路由（runtimeMode 感知 + playwright 窗口状态/启动）
