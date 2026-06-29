@@ -21,6 +21,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'sep-2',      label: '',           type: 'separator' },
   { key: 'sec-sys',    label: '系统',      type: 'section' },
   { key: 'cloud',      label: '云端总览',    icon: 'Cloud',             path: '/cloud',      type: 'item' },
+  { key: 'organization', label: '组织信息',    icon: 'Building2',         path: '/organization', type: 'item' },
   { key: 'settings',   label: '系统设置',    icon: 'Settings',          path: '/settings',   type: 'item' },
 ];
 

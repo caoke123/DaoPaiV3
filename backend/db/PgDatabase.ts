@@ -1484,4 +1484,84 @@ export class PgDatabase {
     this.initialized = false;
     console.log('[PgDatabase] 连接池已关闭');
   }
+
+  // ══════════════════════════════════════════════════════════
+  // 12. 租户/站点/工作站只读查询（Phase 3-F）
+  // ══════════════════════════════════════════════════════════
+
+  /** 获取租户信息 */
+  async getTenantById(tenantId: string): Promise<{
+    id: string;
+    name: string;
+    status: string;
+    maxWorkstations: number;
+    expiresAt: string | null;
+    createdAt: string;
+  } | null> {
+    const result = await this.pool.query(
+      `SELECT id, name, status, max_workstations, expires_at, created_at
+       FROM tenants WHERE id = $1`,
+      [tenantId]
+    );
+    if (result.rows.length === 0) return null;
+    const r = result.rows[0] as any;
+    return {
+      id: r.id,
+      name: r.name,
+      status: r.status,
+      maxWorkstations: r.max_workstations,
+      expiresAt: r.expires_at,
+      createdAt: r.created_at,
+    };
+  }
+
+  /** 获取租户下所有站点 */
+  async getSitesByTenant(tenantId: string): Promise<Array<{
+    id: string;
+    name: string;
+    code: string | null;
+    enabled: boolean;
+    createdAt: string;
+  }>> {
+    const result = await this.pool.query(
+      `SELECT id, name, code, enabled, created_at
+       FROM sites WHERE tenant_id = $1 ORDER BY name`,
+      [tenantId]
+    );
+    return result.rows.map((r: any) => ({
+      id: r.id,
+      name: r.name,
+      code: r.code,
+      enabled: r.enabled,
+      createdAt: r.created_at,
+    }));
+  }
+
+  /** 获取租户下所有工作站 */
+  async getWorkstationsByTenant(tenantId: string): Promise<Array<{
+    id: string;
+    name: string;
+    siteId: string | null;
+    status: string;
+    onlineStatus: string;
+    browserStatus: string;
+    lastHeartbeatAt: string | null;
+    createdAt: string;
+  }>> {
+    const result = await this.pool.query(
+      `SELECT id, name, site_id, status, online_status, browser_status, last_heartbeat_at, created_at
+       FROM workstations WHERE tenant_id = $1 ORDER BY name`,
+      [tenantId]
+    );
+    return result.rows.map((r: any) => ({
+      id: r.id,
+      name: r.name,
+      siteId: r.site_id,
+      status: r.status,
+      onlineStatus: r.online_status,
+      browserStatus: r.browser_status,
+      lastHeartbeatAt: r.last_heartbeat_at,
+      createdAt: r.created_at,
+    }));
+  }
 }

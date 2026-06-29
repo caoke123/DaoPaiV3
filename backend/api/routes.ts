@@ -1977,6 +1977,54 @@ router.get('/api/operations', async (req: Request, res: Response) => {
   }
 });
 
+// ── Phase 3-F: Cloud 组织信息只读接口 ────────────────────
+
+/** GET /api/cloud/tenant — 当前租户信息（只读） */
+router.get('/api/cloud/tenant', async (req: Request, res: Response) => {
+  try {
+    const tenantId = getTenantId(req);
+    const pg = PgDatabase.getInstance();
+    const tenant = await pg.getTenantById(tenantId);
+
+    if (!tenant) {
+      return res.status(404).json({ error: '租户不存在' });
+    }
+
+    res.json(tenant);
+  } catch (e) {
+    console.error('[GET /api/cloud/tenant] 失败:', (e as Error).message);
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
+
+/** GET /api/cloud/sites — 当前租户下站点列表（只读） */
+router.get('/api/cloud/sites', async (req: Request, res: Response) => {
+  try {
+    const tenantId = getTenantId(req);
+    const pg = PgDatabase.getInstance();
+    const sites = await pg.getSitesByTenant(tenantId);
+
+    res.json({ tenantId, sites });
+  } catch (e) {
+    console.error('[GET /api/cloud/sites] 失败:', (e as Error).message);
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
+
+/** GET /api/cloud/workstations — 当前租户下工作站列表（只读） */
+router.get('/api/cloud/workstations', async (req: Request, res: Response) => {
+  try {
+    const tenantId = getTenantId(req);
+    const pg = PgDatabase.getInstance();
+    const workstations = await pg.getWorkstationsByTenant(tenantId);
+
+    res.json({ tenantId, workstations });
+  } catch (e) {
+    console.error('[GET /api/cloud/workstations] 失败:', (e as Error).message);
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
+
 /**
  * 启动时清理所有僵尸任务
  * 服务重启后调用：查询 DB 中所有 status='running' 的任务 → 更新为 failed → 记录 Service restarted unexpectedly

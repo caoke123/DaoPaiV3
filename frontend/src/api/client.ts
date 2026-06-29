@@ -964,3 +964,66 @@ export async function updateRuntimeMode(dryRunMode: boolean): Promise<RuntimeMod
   }
   return resp.json();
 }
+
+// ── Phase 3-F: Cloud 组织信息 API ──
+
+/** 租户信息 */
+export interface TenantInfo {
+  id: string;
+  name: string;
+  status: string;
+  maxWorkstations: number;
+  expiresAt: string | null;
+  createdAt: string;
+}
+
+/** 站点信息 */
+export interface SiteInfo {
+  id: string;
+  name: string;
+  code: string | null;
+  enabled: boolean;
+  createdAt: string;
+}
+
+/** 工作站信息 */
+export interface WorkstationInfo {
+  id: string;
+  name: string;
+  siteId: string | null;
+  status: string;
+  onlineStatus: string;
+  browserStatus: string;
+  lastHeartbeatAt: string | null;
+  createdAt: string;
+}
+
+/** GET /api/cloud/tenant — 获取当前租户信息 */
+export async function getCurrentTenant(): Promise<TenantInfo> {
+  const resp = await fetchWithAuth(`${BASE}/cloud/tenant`);
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ error: '请求失败' }));
+    throw new Error(err.error || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
+/** GET /api/cloud/sites — 获取当前租户下站点列表 */
+export async function getTenantSites(): Promise<{ tenantId: string; sites: SiteInfo[] }> {
+  const resp = await fetchWithAuth(`${BASE}/cloud/sites`);
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ error: '请求失败' }));
+    throw new Error(err.error || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
+/** GET /api/cloud/workstations — 获取当前租户下工作站列表 */
+export async function getTenantWorkstations(): Promise<{ tenantId: string; workstations: WorkstationInfo[] }> {
+  const resp = await fetchWithAuth(`${BASE}/cloud/workstations`);
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ error: '请求失败' }));
+    throw new Error(err.error || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}

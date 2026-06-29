@@ -13,6 +13,7 @@ import SignPage from './pages/SignPage';
 import TasksPage from './pages/TasksPage';
 import SettingsPage from './pages/SettingsPage';
 import CloudOverviewPage from './pages/CloudOverviewPage';
+import OrganizationPage from './pages/OrganizationPage';
 
 /** 内部组件：设置 onAuthFailure 导航（需在 Router 内使用 useNavigate） */
 function AuthFailureHandler() {
@@ -54,6 +55,7 @@ export default function App() {
           <Route path="/tasks" element={<TasksPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/cloud" element={<CloudOverviewPage />} />
+          <Route path="/organization" element={<OrganizationPage />} />
         </Route>
       </Routes>
     </>
