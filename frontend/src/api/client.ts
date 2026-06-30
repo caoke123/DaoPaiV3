@@ -1050,3 +1050,27 @@ export async function getTenantUsers(): Promise<{ tenantId: string; users: UserI
   }
   return resp.json();
 }
+
+// ── Phase 5-E: Agent arrival 浏览器 DRY-RUN 任务创建 ──
+
+export interface CreateArrivalDryRunParams {
+  siteId: string;
+  siteName: string;
+  waybills: string[];
+  options?: { prevStation?: string; batchSize?: number };
+  browserDryRun?: boolean;
+}
+
+/** POST /api/cloud/agent-arrival-task — 创建到件扫描浏览器 DRY-RUN 任务 */
+export async function createArrivalDryRunTask(params: CreateArrivalDryRunParams): Promise<{ taskId: string; message: string }> {
+  const resp = await fetchWithAuth(`${BASE}/cloud/agent-arrival-task`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...params, browserDryRun: true }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ error: '请求失败' }));
+    throw new Error(err.error || err.message || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
