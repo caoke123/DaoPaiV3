@@ -32,6 +32,10 @@ export interface IntegratedBrowserDryRunInput {
   waybills: string[];
   options?: {
     prevStation?: string;
+    /** 派件员姓名（用于回填校验） */
+    courierName?: string;
+    /** 派件员员工编号（用于弹窗表格精确匹配） */
+    courierEmployeeId?: string;
   };
 }
 
@@ -42,6 +46,7 @@ export interface IntegratedBrowserDryRunResult {
   inputCount: number;
   prevStationSelected: boolean;
   integratedCheckboxChecked: boolean;
+  courierSelected: boolean;
   clickedButton: 'none' | 'search';
   finalSubmitClicked: false;
   detectBefore: IntegratedPageDetectResult | null;
@@ -123,6 +128,8 @@ export async function runIntegratedBrowserDryRun(
   const warnings: string[] = [];
   const { waybills, options } = input;
   const prevStation = options?.prevStation || DEFAULT_PREV_STATION;
+  const courierName = options?.courierName;
+  const courierEmployeeId = options?.courierEmployeeId;
 
   const result: IntegratedBrowserDryRunResult = {
     success: false,
@@ -131,6 +138,7 @@ export async function runIntegratedBrowserDryRun(
     inputCount: 0,
     prevStationSelected: false,
     integratedCheckboxChecked: false,
+    courierSelected: false,
     clickedButton: 'none',
     finalSubmitClicked: false,
     detectBefore: null,
@@ -282,7 +290,46 @@ export async function runIntegratedBrowserDryRun(
     }
   }
 
-  // 6. 稳定输入测试运单
+  // 6. 选派件员 —— 触发"选择派件员"弹窗，按员工编号精确匹配，点击"使用"按钮
+  //    选择器来源：integratedSelectors.ts courierSelectInput / courierDialogWrapper /
+  //                courierDialogTableRow / courierDialogEmployeeIdCell / courierUseButton
+  //    交互顺序来源：IntegratedScan.ts:341-464 selectCourier
+  //    ⚠️ 必须用 Playwright 真实 .click() 点击（不能用 page.evaluate），否则 Vue 监听器不响应
+  //    ⚠️ "使用"按钮不是最终提交，是必要业务字段选择，允许点击
+  //    ⚠️ 派件员 input 在勾选"到派一体"复选框后才动态出现，不能用 detectBefore 检测结果
+  //       （detectBefore 是勾选前检测，hasCourierSelectInput 必然为 false）
+  //       selectCourier 内部会用 locator.count() 重新检测，找不到时返回 false
+  let courierSelectSuccess = false;
+  if (integratedCheckboxSuccess && courierName && courierEmployeeId) {
+    console.log(`  [Integrated-DRY-RUN] 选派件员开始：${courierName} (employeeId=${courierEmployeeId})`);
+    console.log(`  [Integrated-DRY-RUN] 派件员 input 选择器来源: integratedSelectors.ts courierSelectInput`);
+    console.log(`  [Integrated-DRY-RUN] 派件员弹窗选择器来源: integratedSelectors.ts courierDialogWrapper`);
+    console.log(`  [Integrated-DRY-RUN] 派件员表格行选择器来源: integratedSelectors.ts courierDialogTableRow`);
+    console.log(`  [Integrated-DRY-RUN] 员工编号列选择器来源: integratedSelectors.ts courierDialogEmployeeIdCell`);
+    console.log(`  [Integrated-DRY-RUN] 使用按钮选择器来源: integratedSelectors.ts courierUseButton`);
+    result.validationLogs.push(`选派件员开始：${courierName} (employeeId=${courierEmployeeId})`);
+    try {
+      courierSelectSuccess = await selectCourier(page, courierName, courierEmployeeId);
+      if (courierSelectSuccess) {
+        result.courierSelected = true;
+        console.log(`  [Integrated-DRY-RUN] 派件员选择校验通过：${courierName}`);
+        result.validationLogs.push(`派件员选择校验通过：${courierName}`);
+      } else {
+        console.log(`  [Integrated-DRY-RUN] 派件员选择校验失败：未确认选中"${courierName}"`);
+      }
+    } catch (err) {
+      console.log(`  [Integrated-DRY-RUN] 派件员选择异常: ${(err as Error).message}`);
+    }
+
+    if (!courierSelectSuccess) {
+      warnings.push(`派件员选择失败：未确认选中"${courierName}"`);
+    }
+  } else if (integratedCheckboxSuccess && (!courierName || !courierEmployeeId)) {
+    console.log(`  [Integrated-DRY-RUN] 未提供 courierName/courierEmployeeId，跳过派件员选择`);
+    warnings.push('未提供派件员信息，跳过派件员选择');
+  }
+
+  // 7. 稳定输入测试运单
   //    选择器来源：integratedScan.selectors.ts:77 waybillInput
   //    旧代码使用位置：IntegratedScan.ts:519, 522
   let waybillInputSuccess = false;
@@ -313,19 +360,21 @@ export async function runIntegratedBrowserDryRun(
     }
   }
 
-  // 7. 输入前置校验：上一站 + 到派一体复选框 + 运单输入必须全部成功
+  // 8. 输入前置校验：上一站 + 到派一体复选框 + 派件员 + 运单输入必须全部成功
   console.log('  [Integrated-DRY-RUN] 输入前置校验开始...');
   const preInputChecks = {
     prevStation: prevStationSuccess,
     integratedCheckbox: integratedCheckboxSuccess,
+    courier: courierSelectSuccess,
     waybill: waybillInputSuccess,
   };
-  console.log(`  [Integrated-DRY-RUN] 校验结果：上一站=${preInputChecks.prevStation}，到派一体=${preInputChecks.integratedCheckbox}，运单=${preInputChecks.waybill}`);
+  console.log(`  [Integrated-DRY-RUN] 校验结果：上一站=${preInputChecks.prevStation}，到派一体=${preInputChecks.integratedCheckbox}，派件员=${preInputChecks.courier}，运单=${preInputChecks.waybill}`);
 
-  if (!preInputChecks.prevStation || !preInputChecks.integratedCheckbox || !preInputChecks.waybill) {
+  if (!preInputChecks.prevStation || !preInputChecks.integratedCheckbox || !preInputChecks.courier || !preInputChecks.waybill) {
     const failedParts: string[] = [];
     if (!preInputChecks.prevStation) failedParts.push('上一站填写');
     if (!preInputChecks.integratedCheckbox) failedParts.push('到派一体勾选');
+    if (!preInputChecks.courier) failedParts.push('派件员选择');
     if (!preInputChecks.waybill) failedParts.push('运单输入');
     result.message = `输入前置校验失败：${failedParts.join('、')}未通过，已停止执行`;
     result.success = false;
@@ -336,25 +385,25 @@ export async function runIntegratedBrowserDryRun(
   console.log('  [Integrated-DRY-RUN] 输入前置校验通过');
   result.validationLogs.push('输入前置校验通过');
 
-  // 8. 安全检测添加按钮和上传按钮（仅检测，不点击）
+  // 9. 安全检测添加按钮和上传按钮（仅检测，不点击）
   console.log(`  [Integrated-DRY-RUN] 添加按钮选择器来源: integratedScan.selectors.ts:80 addButton（仅检测，不点击）`);
   console.log(`  [Integrated-DRY-RUN] 上传按钮选择器来源: integratedScan.selectors.ts:92 uploadButton（仅检测，不点击）`);
   result.validationLogs.push('已检测添加按钮（未点击）');
   result.validationLogs.push('已检测上传按钮（未点击）');
   result.validationLogs.push('已阻止最终提交');
 
-  // 9. 再次检测页面元素（输入后）
+  // 10. 再次检测页面元素（输入后）
   console.log('  [Integrated-DRY-RUN] 检测到派一体页面元素（输入后）...');
   const detectAfter = await detectIntegratedPage(page);
   result.detectAfter = detectAfter;
 
-  // 10. 明确 finalSubmitClicked = false
+  // 11. 明确 finalSubmitClicked = false
   result.finalSubmitClicked = false;
   result.clickedButton = 'none';
 
-  // 11. 结果
+  // 12. 结果
   result.success = true;
-  result.message = '到派一体 DRY-RUN 完成：已选上一站+勾选到派一体+输入运单，未点击添加按钮，未点击上传按钮';
+  result.message = '到派一体 DRY-RUN 完成：已选上一站+勾选到派一体+选派件员+输入运单，未点击添加按钮，未点击上传按钮';
 
   console.log(`  [Integrated-DRY-RUN] ${result.message}`);
   return result;
@@ -658,6 +707,158 @@ async function verifyPrevStationSelected(page: Page, prevStation: string): Promi
     console.log(`  [Integrated-DRY-RUN] 上一站校验失败：input="${inputValue}"，tag="${tagText}"，selected="${selectedText}"`);
     return false;
   } catch {
+    return false;
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+// 选派件员 —— 触发"选择派件员"弹窗，按员工编号精确匹配，点击"使用"按钮
+//
+// 严格遵循旧代码 IntegratedScan.ts:341-464 selectCourier 原样逻辑：
+//   1. Playwright 真实 .click() 点击派件员 input（触发 Vue 监听器弹出弹窗）
+//   2. 等待 div.el-dialog__wrapper 弹窗出现（textContent 包含"选择派件员"）
+//   3. 遍历 el-table 表格行，按 el-table_2_column_16（员工编号列）精确匹配 employeeId
+//      （字符串严格相等，不用 includes 模糊匹配）
+//   4. 点击匹配行的"使用"按钮（位于 .el-table__fixed-right 固定列内）
+//      ⚠️ "使用"按钮不是最终提交，是必要业务字段选择
+//   5. 验证：弹窗关闭 + 派件员 input 回填的姓名与传入 courierName 一致
+//
+// ⚠️ 关键：必须用 Playwright 真实 .click()（page.click / locator.click），
+//    不能用 page.evaluate(el => el.click()) —— 后者不触发 Vue 监听器，
+//    弹窗不会弹出，"使用"按钮点击也不会生效。
+//
+// 选择器来源：
+//   - courierSelectInput: integratedSelectors.ts（来源 integratedScan.selectors.ts:44）
+//   - courierDialogWrapper: integratedSelectors.ts（来源 integratedScan.selectors.ts:56）
+//   - courierDialogTableRow: integratedSelectors.ts（来源 integratedScan.selectors.ts:59）
+//   - courierDialogEmployeeIdCell: integratedSelectors.ts（来源 integratedScan.selectors.ts:65）
+//   - courierUseButton: integratedSelectors.ts（来源 integratedScan.selectors.ts:74）
+// ══════════════════════════════════════════════════════════
+
+async function selectCourier(
+  page: Page,
+  courierName: string,
+  courierEmployeeId: string,
+): Promise<boolean> {
+  // Step 1: Playwright 真实 .click() 点击派件员 input 触发弹窗
+  console.log(`  [Integrated-DRY-RUN] 派件员 Step1: 点击派件员 input 触发弹窗`);
+  const inputLoc = page.locator(INTEGRATED_SCAN_SELECTORS.courierSelectInput);
+  const inputCount = await inputLoc.count();
+  if (inputCount === 0) {
+    console.log(`  [Integrated-DRY-RUN] 未找到派件员 input（选择器: ${INTEGRATED_SCAN_SELECTORS.courierSelectInput}）`);
+    return false;
+  }
+
+  try {
+    await inputLoc.first().click({ timeout: 10_000 });
+  } catch (err) {
+    console.log(`  [Integrated-DRY-RUN] 点击派件员 input 失败: ${(err as Error).message}`);
+    return false;
+  }
+
+  // Step 2: 等待"选择派件员"弹窗出现
+  console.log(`  [Integrated-DRY-RUN] 派件员 Step2: 等待"选择派件员"弹窗出现`);
+  const dialogLoc = page.locator(INTEGRATED_SCAN_SELECTORS.courierDialogWrapper);
+  try {
+    await dialogLoc.waitFor({ state: 'visible', timeout: 10_000 });
+  } catch (err) {
+    console.log(`  [Integrated-DRY-RUN] "选择派件员"弹窗未出现: ${(err as Error).message}`);
+    return false;
+  }
+  console.log(`  [Integrated-DRY-RUN] "选择派件员"弹窗已出现`);
+
+  // Step 3: 遍历表格行，按员工编号精确匹配 employeeId
+  //    旧代码使用固定列选择器 td.el-table_2_column_16，但实际页面 el-table id 可能不同
+  //    改为更通用的方式：用 page.evaluate 遍历每行所有 td，找文本严格等于 employeeId 的单元格
+  console.log(`  [Integrated-DRY-RUN] 派件员 Step3: 遍历表格行按员工编号精确匹配 (employeeId=${courierEmployeeId})`);
+
+  const matchResult = await page.evaluate((args: { rowSelector: string; targetId: string }) => {
+    const rows = document.querySelectorAll(args.rowSelector);
+    const idDump: string[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      const cells = rows[i].querySelectorAll('td');
+      for (const cell of cells) {
+        const text = (cell.textContent || '').trim();
+        if (text && text.length > 0) {
+          idDump.push(`[行${i + 1}列${cell.className || '?'}]=${text}`);
+        }
+        // 严格相等匹配 employeeId
+        if (text === args.targetId) {
+          return { matchedRowIdx: i, idDump, matchedText: text };
+        }
+      }
+    }
+    return { matchedRowIdx: -1, idDump, matchedText: '' };
+  }, {
+    rowSelector: INTEGRATED_SCAN_SELECTORS.courierDialogTableRow,
+    targetId: courierEmployeeId,
+  }).catch(() => ({ matchedRowIdx: -1, idDump: [], matchedText: '' }));
+
+  const rowCount = matchResult.idDump.length;
+  console.log(`  [Integrated-DRY-RUN] 弹窗表格扫描单元格数: ${rowCount}`);
+
+  if (matchResult.matchedRowIdx === -1) {
+    console.log(`  [Integrated-DRY-RUN] 未找到员工编号=${courierEmployeeId} 的行。表格扫描结果: ${JSON.stringify(matchResult.idDump.slice(0, 20))}`);
+    // 关闭弹窗，避免阻塞后续操作
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(500);
+    return false;
+  }
+
+  console.log(`  [Integrated-DRY-RUN] 匹配命中: 第${matchResult.matchedRowIdx + 1}行, 员工编号=${matchResult.matchedText}`);
+  const matchedRowIdx = matchResult.matchedRowIdx;
+
+  // Step 4: 点击匹配行的"使用"按钮（位于 .el-table__fixed-right 固定列内）
+  // Element UI 固定列机制：操作列在主表中 is-hidden，在 .el-table__fixed-right 中可见
+  // 匹配行索引在主表和固定列表中是一致的（同一行数据）
+  console.log(`  [Integrated-DRY-RUN] 派件员 Step4: 点击第${matchedRowIdx + 1}行的"使用"按钮`);
+  const useButtonLoc = page.locator(INTEGRATED_SCAN_SELECTORS.courierUseButton).nth(matchedRowIdx);
+
+  try {
+    await useButtonLoc.click({ timeout: 5_000 });
+  } catch (err) {
+    console.log(`  [Integrated-DRY-RUN] 点击"使用"按钮失败: ${(err as Error).message}`);
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(500);
+    return false;
+  }
+
+  // Step 5: 验证 —— 弹窗关闭 + 派件员 input 回填的姓名与传入 courierName 一致
+  console.log(`  [Integrated-DRY-RUN] 派件员 Step5: 验证弹窗关闭 + 派件员 input 回填`);
+
+  // 等待弹窗关闭（Element UI 关闭动画约 300-500ms，给 5s 兜底）
+  let dialogClosed = true;
+  try {
+    await dialogLoc.waitFor({ state: 'hidden', timeout: 5000 });
+  } catch {
+    dialogClosed = false;
+  }
+
+  if (!dialogClosed) {
+    // 弹窗未关闭 —— 可能是"使用"按钮未生效，但也可能是动画未完成
+    // 用派件员 input 回填值做兜底判断：如果已回填正确姓名，说明选择已生效
+    const fallbackValue = await page.locator(INTEGRATED_SCAN_SELECTORS.courierSelectInput).first()
+      .inputValue().catch(() => '');
+    if (fallbackValue === courierName) {
+      console.log(`  [Integrated-DRY-RUN] 弹窗未完全关闭，但派件员 input 已回填"${fallbackValue}"，视为选择成功`);
+    } else {
+      console.log(`  [Integrated-DRY-RUN] "选择派件员"弹窗未关闭且 input 未回填（value="${fallbackValue}"），"使用"按钮可能未生效`);
+      await page.keyboard.press('Escape').catch(() => {});
+      await page.waitForTimeout(500);
+      return false;
+    }
+  } else {
+    console.log(`  [Integrated-DRY-RUN] "选择派件员"弹窗已关闭`);
+  }
+
+  // 验证派件员 input 回填的姓名与传入 courierName 一致
+  const courierInputValue = await page.locator(INTEGRATED_SCAN_SELECTORS.courierSelectInput).first()
+    .inputValue().catch(() => '');
+  if (courierInputValue === courierName) {
+    console.log(`  [Integrated-DRY-RUN] 派件员 input 回填验证通过: ${courierInputValue}`);
+    return true;
+  } else {
+    console.log(`  [Integrated-DRY-RUN] 派件员 input 回填值="${courierInputValue}" 与 courierName="${courierName}" 不一致（弹窗已关闭，但校验未通过）`);
     return false;
   }
 }
