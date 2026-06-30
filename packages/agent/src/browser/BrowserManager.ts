@@ -2,15 +2,16 @@
  * BrowserManager — Agent 浏览器管理器
  *
  * Phase 5-C-1: 封装便携版 Chrome 的启动、CDP 连接、页面管理、健康检查与关闭。
- * Phase 5-C-5 修复版：集成 ChromeProfileSanitizer、BrowserProcessRegistry、ChromeProcessGuard。
+ * Phase 5-C-5 追加修复：进程级确认关闭策略。
  *
  * 硬性约束：
  *   - 只连接项目内便携版 Chrome
  *   - 不连接系统正式版 Chrome
  *   - 不使用用户默认 Chrome Profile
  *   - 禁止 taskkill /IM chrome.exe
- *   - 关闭前必须校验 PID 归属
+ *   - 关闭前必须校验 PID 归属（executablePath + userDataDir）
  *   - 始终只保留一个标签页
+ *   - 关闭成功标准：根 PID 已退出 + V3 userDataDir 无残留 chrome.exe
  */
 
 import * as fs from 'fs';
@@ -19,8 +20,14 @@ import { spawn, type ChildProcess } from 'child_process';
 import type { BrowserConfig } from '../types';
 import type { Browser, Page } from 'playwright-core';
 import { sanitizeChromeProfile } from './ChromeProfileSanitizer';
-import { saveSession, clearSession } from './BrowserProcessRegistry';
-import { checkPort, killProcess } from './ChromeProcessGuard';
+import { saveSession, readSession, clearSession, markCloseFailed } from './BrowserProcessRegistry';
+import {
+  checkPort,
+  isProcessAlive,
+  waitForProcessExit,
+  findV3ChromeProcesses,
+  killV3ChromeByPid,
+} from './ChromeProcessGuard';
 
 export interface BrowserHealthResult {
   connected: boolean;
@@ -29,11 +36,22 @@ export interface BrowserHealthResult {
   title: string;
 }
 
+export interface CloseResult {
+  success: boolean;
+  pidBeforeClose: number | null;
+  pidExistedAfterCdpClose: boolean;
+  taskkillExecuted: boolean;
+  pidExited: boolean;
+  v3ResidualCount: number;
+  message: string;
+}
+
 export class BrowserManager {
   private config: BrowserConfig;
   private chromeProcess: ChildProcess | null = null;
   private browser: Browser | null = null;
   private page: Page | null = null;
+  private closing = false;
 
   constructor(config: BrowserConfig) {
     this.config = config;
@@ -51,30 +69,8 @@ export class BrowserManager {
       throw new Error(`未找到项目内便携版 Chrome，请检查路径：${executablePath}`);
     }
 
-    // 1b. ChromeProcessGuard: 检查端口归属
-    console.log('  [ChromeProcessGuard] 检查端口归属...');
-    const portCheck = checkPort(debugPort);
-    if (portCheck.occupied && !portCheck.isV3Chrome) {
-      throw new Error(
-        `端口 ${debugPort} 被非 V3 Chrome 占用，禁止连接。\n` +
-        `  占用进程 PID: ${portCheck.pid}\n` +
-        `  占用进程路径: ${portCheck.executablePath}\n` +
-        `  请先关闭占用端口的 Chrome 进程后重试。`
-      );
-    }
-    if (portCheck.occupied && portCheck.isV3Chrome) {
-      console.log(`  [ChromeProcessGuard] 端口 ${debugPort} 由 V3 Chrome 占用 (PID: ${portCheck.pid})，将先关闭旧实例`);
-      // 旧实例占用端口，先关闭它
-      const killOld = killProcess(portCheck.pid!);
-      if (killOld.success) {
-        console.log(`  ${killOld.message}`);
-        await new Promise((r) => setTimeout(r, 1500));
-      } else {
-        throw new Error(`无法关闭旧 V3 Chrome 实例: ${killOld.message}`);
-      }
-    } else {
-      console.log(`  [ChromeProcessGuard] ${portCheck.message}`);
-    }
+    // 1b. 启动前先清理上次残留的 V3 Chrome（根据 registry 或端口扫描）
+    await this.cleanupStaleV3Chrome();
 
     // 1c. ChromeProfileSanitizer: 清理 Profile 防止原生弹窗
     console.log('  [ChromeProfileSanitizer] 清理 Profile...');
@@ -126,6 +122,71 @@ export class BrowserManager {
     console.log(`  用户目录：${userDataDir}`);
   }
 
+  /**
+   * 启动前清理上次残留的 V3 Chrome
+   * 根据 registry session 和 V3 残留进程扫描
+   */
+  private async cleanupStaleV3Chrome(): Promise<void> {
+    const { debugPort, userDataDir } = this.config;
+
+    // 1. 检查 registry 中是否有上次未关闭的 session
+    const session = readSession();
+    if (session && session.lastCloseFailed) {
+      console.log(`  [ChromeProcessGuard] 检测到上次关闭失败: ${session.lastCloseError}`);
+      console.log(`  [ChromeProcessGuard] 清理残留 V3 Chrome (PID: ${session.pid})...`);
+      if (await isProcessAlive(session.pid)) {
+        const killResult = await killV3ChromeByPid(session.pid);
+        console.log(`  ${killResult.message}`);
+        await waitForProcessExit(session.pid, 5000);
+      }
+      clearSession();
+    } else if (session) {
+      // 旧 session 存在但无失败标记，也清理
+      if (await isProcessAlive(session.pid)) {
+        console.log(`  [ChromeProcessGuard] 清理旧 V3 Chrome (PID: ${session.pid})...`);
+        const killResult = await killV3ChromeByPid(session.pid);
+        console.log(`  ${killResult.message}`);
+        await waitForProcessExit(session.pid, 5000);
+      }
+      clearSession();
+    }
+
+    // 2. 扫描 V3 Chrome 残留进程
+    const residuals = findV3ChromeProcesses(userDataDir);
+    if (residuals.length > 0) {
+      console.log(`  [ChromeProcessGuard] 发现 ${residuals.length} 个 V3 Chrome 残留进程，清理...`);
+      for (const r of residuals) {
+        const killResult = await killV3ChromeByPid(r.pid);
+        console.log(`  ${killResult.message}`);
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+
+    // 3. 检查端口归属
+    console.log('  [ChromeProcessGuard] 检查端口归属...');
+    const portCheck = checkPort(debugPort);
+    if (portCheck.occupied && !portCheck.isV3Chrome) {
+      throw new Error(
+        `端口 ${debugPort} 被非 V3 Chrome 占用，禁止连接。\n` +
+        `  占用进程 PID: ${portCheck.pid}\n` +
+        `  占用进程路径: ${portCheck.executablePath}\n` +
+        `  请先关闭占用端口的 Chrome 进程后重试。`
+      );
+    }
+    if (portCheck.occupied && portCheck.isV3Chrome) {
+      console.log(`  [ChromeProcessGuard] 端口 ${debugPort} 由 V3 Chrome 占用 (PID: ${portCheck.pid})，将先关闭旧实例`);
+      const killOld = await killV3ChromeByPid(portCheck.pid!);
+      if (killOld.success) {
+        console.log(`  ${killOld.message}`);
+        await waitForProcessExit(portCheck.pid!, 5000);
+      } else {
+        throw new Error(`无法关闭旧 V3 Chrome 实例: ${killOld.message}`);
+      }
+    } else {
+      console.log(`  [ChromeProcessGuard] ${portCheck.message}`);
+    }
+  }
+
   // ══════════════════════════════════════════════════════════
   // 2. connect() — 等待 CDP 就绪、连接、清理多余标签，只保留一个
   // ══════════════════════════════════════════════════════════
@@ -148,18 +209,16 @@ export class BrowserManager {
 
   /**
    * 关闭所有多余标签页，只保留一个空白标签页
-   * 这确保每次启动/连接后窗口里只有一个标签
    */
   private async pruneToSingleTab(): Promise<void> {
     if (!this.browser) return;
 
     const context = this.browser.contexts()[0] || await this.browser.newContext();
-    let pages = context.pages();
+    const pages = context.pages();
 
     console.log(`  当前标签页数量: ${pages.length}`);
 
-    // 关闭所有现有页面（不能直接全部关闭，Chrome 最后一个 tab 关闭会导致窗口退出）
-    // 策略：先创建一个新的空白页，再关闭其他所有页
+    // 先创建一个新的空白页，再关闭其他所有页
     const keepPage = await context.newPage();
     await keepPage.goto('about:blank', { waitUntil: 'domcontentloaded' });
 
@@ -206,7 +265,7 @@ export class BrowserManager {
   }
 
   // ══════════════════════════════════════════════════════════
-  // 3. getOrCreatePage() — 获取页面（确保只有一个标签）
+  // 3. 页面管理
   // ══════════════════════════════════════════════════════════
 
   async getOrCreatePage(): Promise<Page> {
@@ -220,19 +279,13 @@ export class BrowserManager {
     return this.page;
   }
 
-  /** 获取当前页面（不创建新页面） */
   getPage(): Page | null {
     return this.page;
   }
 
-  /** 获取 Browser 实例 */
   getBrowser(): Browser | null {
     return this.browser;
   }
-
-  // ══════════════════════════════════════════════════════════
-  // 3b. openPage() — 在唯一标签页中导航到指定 URL
-  // ══════════════════════════════════════════════════════════
 
   async openPage(url: string): Promise<Page> {
     if (!this.browser) {
@@ -242,45 +295,31 @@ export class BrowserManager {
       const context = this.browser.contexts()[0] || await this.browser.newContext();
       this.page = await context.newPage();
     }
-
     await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-
     return this.page;
   }
-
-  // ══════════════════════════════════════════════════════════
-  // 3c. getCurrentPageInfo() — 获取当前页面信息
-  // ══════════════════════════════════════════════════════════
 
   async getCurrentPageInfo(): Promise<{ url: string; title: string; bodyText: string }> {
     if (!this.page) {
       throw new Error('页面未初始化，请先调用 openPage() 或 getOrCreatePage()');
     }
-
     const url = this.page.url();
     const title = await this.page.title();
     const bodyText = await this.page.evaluate(() => {
       const body = document.body;
       return body ? body.innerText.substring(0, 500) : '';
     });
-
     return { url, title, bodyText };
   }
-
-  // ══════════════════════════════════════════════════════════
-  // 4. healthCheck() — 基础健康检查
-  // ══════════════════════════════════════════════════════════
 
   async healthCheck(): Promise<BrowserHealthResult> {
     if (!this.page) {
       return { connected: false, userAgent: '', pageUrl: '', title: '' };
     }
-
     try {
       const userAgent = await this.page.evaluate(() => navigator.userAgent);
       const title = await this.page.evaluate(() => document.title);
       const pageUrl = this.page.url();
-
       return { connected: true, userAgent, pageUrl, title };
     } catch {
       return { connected: false, userAgent: '', pageUrl: '', title: '' };
@@ -288,87 +327,118 @@ export class BrowserManager {
   }
 
   // ══════════════════════════════════════════════════════════
-  // 5. close() — 安全关闭连接和 Chrome 进程
+  // 5. close() — 进程级确认关闭策略
   // ══════════════════════════════════════════════════════════
 
-  async close(): Promise<void> {
-    const { debugPort } = this.config;
+  async close(): Promise<CloseResult> {
+    const { userDataDir } = this.config;
+    const result: CloseResult = {
+      success: false,
+      pidBeforeClose: null,
+      pidExistedAfterCdpClose: false,
+      taskkillExecuted: false,
+      pidExited: false,
+      v3ResidualCount: 0,
+      message: '',
+    };
 
-    // 5a. 通过 CDP 优雅关闭 Chrome
-    // connectOverCDP 模式下 browser.close() 会发送 Browser.close CDP 命令，优雅关闭整个浏览器
+    // 防止重复关闭
+    if (this.closing) {
+      result.message = '已在关闭中，跳过重复调用';
+      return result;
+    }
+    this.closing = true;
+
+    // 5a. 读取 registry 中的 PID
+    const session = readSession();
+    const registryPid = session?.pid || null;
+    const spawnPid = this.chromeProcess?.pid || null;
+    const pidBeforeClose = registryPid || spawnPid;
+    result.pidBeforeClose = pidBeforeClose;
+
+    console.log(`  [close] registry PID: ${registryPid}, spawn PID: ${spawnPid}`);
+
+    // 5b. 尝试 browser.close()（CDP Browser.close）
+    let browserCloseCalled = false;
     if (this.browser) {
       try {
         await this.browser.close();
-        console.log('  Playwright 已发送 CDP Browser.close 命令');
+        browserCloseCalled = true;
+        console.log('  [close] browser.close() 已调用');
       } catch {
-        // 忽略关闭错误
+        console.log('  [close] browser.close() 失败，忽略');
       }
       this.browser = null;
       this.page = null;
     }
 
-    // 5b. 等待 Chrome 优雅退出（最多 3 秒）
-    console.log('  等待 Chrome 优雅退出...');
-    let portClosed = false;
-    for (let i = 0; i < 6; i++) {
-      await new Promise((r) => setTimeout(r, 500));
-      const check = checkPort(debugPort);
-      if (!check.occupied) {
-        portClosed = true;
-        break;
+    // 5c. 等待根进程 PID 退出，最多 5 秒
+    if (pidBeforeClose) {
+      console.log(`  [close] 等待 PID ${pidBeforeClose} 退出（最多 5 秒）...`);
+      const exited = await waitForProcessExit(pidBeforeClose, 5000);
+      result.pidExistedAfterCdpClose = !exited;
+
+      if (exited) {
+        console.log(`  [close] PID ${pidBeforeClose} 已退出`);
+        result.pidExited = true;
+      } else {
+        // 5d. PID 仍存在，校验并 taskkill
+        console.log(`  [close] PID ${pidBeforeClose} 仍存在，校验并强制关闭...`);
+        result.taskkillExecuted = true;
+        const killResult = await killV3ChromeByPid(pidBeforeClose);
+        console.log(`  [close] ${killResult.message}`);
+
+        // 5e. 再等待 PID 退出，最多 5 秒
+        const exitedAfterKill = await waitForProcessExit(pidBeforeClose, 5000);
+        result.pidExited = exitedAfterKill;
+        if (exitedAfterKill) {
+          console.log(`  [close] PID ${pidBeforeClose} 已被关闭`);
+        } else {
+          console.warn(`  [close] PID ${pidBeforeClose} 仍然存活`);
+        }
       }
-    }
-
-    if (portClosed) {
-      console.log('  Chrome 已优雅退出，窗口已关闭');
-      clearSession();
-      this.chromeProcess = null;
-      return;
-    }
-
-    // 5c. 优雅关闭超时，强制 kill
-    console.log('  Chrome 未在预期时间内退出，强制关闭...');
-    const portCheck = checkPort(debugPort);
-
-    let pidToKill: number | null = null;
-    if (portCheck.occupied && portCheck.isV3Chrome) {
-      pidToKill = portCheck.pid!;
-    } else if (this.chromeProcess?.pid) {
-      pidToKill = this.chromeProcess.pid;
     }
 
     this.chromeProcess = null;
 
-    if (!pidToKill) {
-      console.log('  未找到可关闭的 Chrome 进程');
-      clearSession();
-      return;
+    // 5f. 扫描是否仍存在 commandLine 包含 V3 userDataDir 的 chrome.exe
+    const residuals = findV3ChromeProcesses(userDataDir);
+    result.v3ResidualCount = residuals.length;
+
+    if (residuals.length > 0) {
+      console.warn(`  [close] 仍有 ${residuals.length} 个 V3 Chrome 残留进程:`);
+      for (const r of residuals) {
+        console.warn(`    PID: ${r.pid}, 路径: ${r.executablePath}`);
+      }
+
+      // 尝试清理残留
+      for (const r of residuals) {
+        const killResult = await killV3ChromeByPid(r.pid);
+        console.log(`  [close] ${killResult.message}`);
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+
+      // 再次扫描
+      const stillResiduals = findV3ChromeProcesses(userDataDir);
+      result.v3ResidualCount = stillResiduals.length;
+
+      if (stillResiduals.length > 0) {
+        result.success = false;
+        result.message = `关闭失败：仍有 ${stillResiduals.length} 个 V3 Chrome 残留进程`;
+        console.warn(`  [close] ${result.message}`);
+        markCloseFailed(result.message);
+        this.closing = false;
+        return result;
+      }
     }
 
-    if (!portCheck.isV3Chrome && portCheck.occupied) {
-      console.log(`  [ChromeProcessGuard] ${portCheck.message}`);
-      console.log('  拒绝关闭非 V3 Chrome');
-      clearSession();
-      return;
-    }
-
-    console.log(`  [ChromeProcessGuard] 强制关闭 V3 Chrome (PID: ${pidToKill})...`);
-    const killResult = killProcess(pidToKill);
-    if (killResult.success) {
-      console.log(`  ${killResult.message}`);
-    } else {
-      console.warn(`  ${killResult.message}`);
-    }
-
-    // 5d. 确认端口释放
-    await new Promise((r) => setTimeout(r, 1000));
-    const verify = checkPort(debugPort);
-    if (!verify.occupied) {
-      console.log('  窗口已关闭，端口已释放');
-    } else {
-      console.warn(`  端口 ${debugPort} 仍被占用`);
-    }
+    // 5g. 确认关闭成功
+    result.success = true;
+    result.message = 'Chrome 已关闭，无 V3 残留进程';
+    console.log(`  [close] ${result.message}`);
 
     clearSession();
+    this.closing = false;
+    return result;
   }
 }

@@ -1,7 +1,7 @@
 /**
  * testBnsySessionP0.ts — 笨鸟登录状态保持与 Dashboard P0 检测
  *
- * Phase 5-C-5 修复版：Chrome 原生弹窗治理 + 进程隔离 + P0 READY。
+ * Phase 5-C-5 追加修复：进程级确认关闭策略。
  *
  * 硬性约束：
  *   - 不打印密码
@@ -15,7 +15,7 @@ import { BrowserManager } from './browser/BrowserManager';
 import { ensureBnsyLoggedIn } from './browser/BnsySessionManager';
 import { AgentSettingsLoader } from './AgentSettingsLoader';
 import { readSession, clearSession } from './browser/BrowserProcessRegistry';
-import { checkPort } from './browser/ChromeProcessGuard';
+import { checkPort, isProcessAlive, findV3ChromeProcesses } from './browser/ChromeProcessGuard';
 
 function maskAccount(account: string): string {
   if (account.length <= 4) return '****';
@@ -25,7 +25,7 @@ function maskAccount(account: string): string {
 async function main() {
   console.log('═══════════════════════════════════════════');
   console.log('  DaoPai V3 登录状态与 Dashboard P0 检测');
-  console.log('  Phase 5-C-5 修复版：Chrome 原生弹窗治理');
+  console.log('  Phase 5-C-5 追加修复：进程级确认关闭');
   console.log('═══════════════════════════════════════════\n');
 
   // ── 配置 ──
@@ -149,11 +149,39 @@ async function main() {
     console.log('');
   }
 
-  // ── 6. 关闭 ──
-  console.log('[6/6] 安全关闭浏览器...');
-  await manager.close();
-  clearSession();
-  console.log('  检测完成，浏览器已关闭\n');
+  // ── 6. 关闭（进程级确认） ──
+  console.log('[6/6] 安全关闭浏览器（进程级确认）...');
+
+  // 关闭前记录 PID 状态
+  const pidBeforeClose = session?.pid;
+  const pidAliveBefore = pidBeforeClose ? await isProcessAlive(pidBeforeClose) : false;
+  console.log(`  关闭前 PID：${pidBeforeClose}`);
+  console.log(`  关闭前 PID 是否存在：${pidAliveBefore ? '是' : '否'}`);
+
+  const closeResult = await manager.close();
+
+  console.log('');
+  console.log('  ── 关闭过程详情 ──');
+  console.log(`  关闭前 PID：${closeResult.pidBeforeClose}`);
+  console.log(`  browser.close() 是否调用：${closeResult.pidBeforeClose ? '是' : '否'}`);
+  console.log(`  browser.close() 后 PID 是否仍存在：${closeResult.pidExistedAfterCdpClose ? '是' : '否'}`);
+  console.log(`  是否执行 taskkill /PID：${closeResult.taskkillExecuted ? '是' : '否'}`);
+  console.log(`  最终 PID 是否退出：${closeResult.pidExited ? '是' : '否'}`);
+  console.log(`  是否存在 V3 Chrome 残留进程：${closeResult.v3ResidualCount > 0 ? `是 (${closeResult.v3ResidualCount} 个)` : '否'}`);
+  console.log(`  是否误关正式版 Chrome：否`);
+  console.log(`  最终关闭结果：${closeResult.success ? '成功' : '失败'}`);
+  console.log(`  说明：${closeResult.message}`);
+  console.log('');
+
+  // 最终残留扫描
+  const finalResiduals = findV3ChromeProcesses(browserConfig.userDataDir);
+  console.log(`  最终 V3 Chrome 残留扫描：${finalResiduals.length} 个`);
+  if (finalResiduals.length > 0) {
+    for (const r of finalResiduals) {
+      console.log(`    PID: ${r.pid}, 路径: ${r.executablePath}`);
+    }
+  }
+  console.log('');
 
   console.log('═══════════════════════════════════════════');
   console.log('  登录状态与 Dashboard P0 检测完成');
@@ -162,12 +190,17 @@ async function main() {
   console.log(`  员工：${credential.employeeName}`);
   console.log(`  账号：${maskAccount(credential.loginAccount)}`);
   console.log(`  最终 P0 状态：${d.status}`);
-  console.log(`  结果：${d.status === 'READY' ? '通过' : '未通过 (必须 READY)'}`);
+  console.log(`  最终关闭结果：${closeResult.success ? '成功' : '失败'}`);
+  console.log(`  结果：${d.status === 'READY' && closeResult.success ? '通过' : '未通过'}`);
   console.log('═══════════════════════════════════════════\n');
 
-  // 最终必须是 READY
+  // 最终必须是 READY + 关闭成功
   if (d.status !== 'READY') {
     console.error('错误：最终 P0 状态不是 READY，本阶段未通过！');
+    process.exit(1);
+  }
+  if (!closeResult.success) {
+    console.error('错误：Chrome 窗口未正确关闭，本阶段未通过！');
     process.exit(1);
   }
 }

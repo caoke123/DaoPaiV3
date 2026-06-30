@@ -1,16 +1,22 @@
 /**
  * BrowserProcessRegistry — Chrome 进程注册表
  *
- * Phase 5-C-5 修复版：记录 V3 本次启动的 Chrome 身份信息，
- * 用于关闭时精确校验，防止误关系统正式版 Chrome。
+ * Phase 5-C-5 追加修复：进程级确认关闭策略。
  *
  * 写入 runtime/browser-session.json，字段：
  *   - instanceId: V3 Agent 实例标识
- *   - pid: Chrome 进程 ID
+ *   - pid: Chrome 进程 ID（spawn 返回的根进程）
  *   - debugPort: CDP 调试端口
  *   - executablePath: Chrome 可执行文件路径
  *   - userDataDir: 用户数据目录
  *   - startedAt: 启动时间
+ *   - lastCloseFailed: 上次关闭是否失败
+ *   - lastCloseError: 上次关闭失败原因
+ *
+ * 关闭策略：
+ *   - 只有根 PID 已退出 + V3 userDataDir 无残留 chrome.exe，才 clearSession()
+ *   - 关闭失败时保留 session 文件，写入 lastCloseFailed=true
+ *   - 下次启动时先根据 registry 清理旧 V3 Chrome
  */
 
 import * as fs from 'fs';
@@ -24,6 +30,8 @@ export interface SessionRecord {
   executablePath: string;
   userDataDir: string;
   startedAt: string;
+  lastCloseFailed?: boolean;
+  lastCloseError?: string;
 }
 
 const SESSION_FILE = path.resolve(
@@ -40,7 +48,6 @@ export function saveSession(
   executablePath: string,
   userDataDir: string,
 ): SessionRecord {
-  // 确保 runtime 目录存在
   const runtimeDir = path.dirname(SESSION_FILE);
   if (!fs.existsSync(runtimeDir)) {
     fs.mkdirSync(runtimeDir, { recursive: true });
@@ -67,6 +74,24 @@ export function readSession(): SessionRecord | null {
     return JSON.parse(raw) as SessionRecord;
   } catch {
     return null;
+  }
+}
+
+/**
+ * 标记本次关闭失败，保留 session 文件供下次启动清理
+ */
+export function markCloseFailed(error: string): void {
+  try {
+    const existing = readSession();
+    if (!existing) return;
+
+    existing.lastCloseFailed = true;
+    existing.lastCloseError = error;
+
+    fs.writeFileSync(SESSION_FILE, JSON.stringify(existing, null, 2), 'utf-8');
+    console.log(`  [BrowserProcessRegistry] 关闭失败已记录: ${error}`);
+  } catch {
+    // 忽略写入失败
   }
 }
 
