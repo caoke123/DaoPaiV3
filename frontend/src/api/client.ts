@@ -1074,3 +1074,78 @@ export async function createArrivalDryRunTask(params: CreateArrivalDryRunParams)
   }
   return resp.json();
 }
+
+// ── Phase 5-E: Agent dispatch 派件浏览器 DRY-RUN 任务创建 ──
+
+export interface CreateAgentDispatchParams {
+  siteId: string;
+  siteName: string;
+  courierName?: string;
+  waybills: string[];
+  options?: { prevStation?: string; batchSize?: number };
+  browserDryRun?: boolean;
+}
+
+/** POST /api/cloud/agent-dispatch-task — 创建派件扫描浏览器 DRY-RUN 任务 */
+export async function createAgentDispatchTask(params: CreateAgentDispatchParams): Promise<{ taskId: string; message: string }> {
+  const resp = await fetchWithAuth(`${BASE}/cloud/agent-dispatch-task`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...params, browserDryRun: true }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ error: '请求失败' }));
+    throw new Error(err.error || err.message || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
+// ── Phase 5-E: Agent integrated 到派一体浏览器 DRY-RUN 任务创建 ──
+
+export interface CreateAgentIntegratedParams {
+  siteId: string;
+  siteName: string;
+  courierName?: string;
+  waybills: string[];
+  options?: { prevStation?: string; batchSize?: number };
+  browserDryRun?: boolean;
+}
+
+/** POST /api/cloud/agent-integrated-task — 创建到派一体浏览器 DRY-RUN 任务 */
+export async function createAgentIntegratedTask(params: CreateAgentIntegratedParams): Promise<{ taskId: string; message: string }> {
+  const resp = await fetchWithAuth(`${BASE}/cloud/agent-integrated-task`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...params, browserDryRun: true }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ error: '请求失败' }));
+    throw new Error(err.error || err.message || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
+// ── Phase 5-E: Agent sign 签收浏览器 DRY-RUN 任务创建 ──
+
+export interface CreateAgentSignParams {
+  siteId: string;
+  siteName: string;
+  courierName?: string;
+  waybills: string[];
+  options?: { prevStation?: string; batchSize?: number };
+  browserDryRun?: boolean;
+}
+
+/** POST /api/cloud/agent-sign-task — 创建签收录入浏览器 DRY-RUN 任务 */
+export async function createAgentSignTask(params: CreateAgentSignParams): Promise<{ taskId: string; message: string }> {
+  const resp = await fetchWithAuth(`${BASE}/cloud/agent-sign-task`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...params, browserDryRun: true }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ error: '请求失败' }));
+    throw new Error(err.error || err.message || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}

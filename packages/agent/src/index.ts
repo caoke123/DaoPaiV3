@@ -20,6 +20,9 @@ import {
 } from './httpClient';
 import { AgentSettingsLoader } from './AgentSettingsLoader';
 import { executeArrivalDryRun } from './executors/ArrivalExecutor';
+import { executeDispatchDryRun } from './executors/DispatchExecutor';
+import { executeIntegratedDryRun } from './executors/IntegratedExecutor';
+import { executeSignDryRun } from './executors/SignExecutor';
 import type { AxiosInstance } from 'axios';
 import type { AgentConfig } from './types';
 
@@ -184,6 +187,51 @@ async function main(): Promise<void> {
             else if (task.type === 'arrival') {
               runningTaskId = task.taskId;
               await executeArrivalDryRun(
+                {
+                  taskId: task.taskId,
+                  siteId: task.siteId,
+                  payload: task.payload as any,
+                },
+                client,
+                settingsLoader,
+                config,
+              );
+              runningTaskId = null;
+            }
+            // dispatch 派件扫描 DRY-RUN（Phase 5-G）
+            else if (task.type === 'dispatch') {
+              runningTaskId = task.taskId;
+              await executeDispatchDryRun(
+                {
+                  taskId: task.taskId,
+                  siteId: task.siteId,
+                  payload: task.payload as any,
+                },
+                client,
+                settingsLoader,
+                config,
+              );
+              runningTaskId = null;
+            }
+            // integrated 到派一体 DRY-RUN（Phase 5-G）
+            else if (task.type === 'integrated') {
+              runningTaskId = task.taskId;
+              await executeIntegratedDryRun(
+                {
+                  taskId: task.taskId,
+                  siteId: task.siteId,
+                  payload: task.payload as any,
+                },
+                client,
+                settingsLoader,
+                config,
+              );
+              runningTaskId = null;
+            }
+            // sign 签收录入 DRY-RUN（Phase 5-G）
+            else if (task.type === 'sign') {
+              runningTaskId = task.taskId;
+              await executeSignDryRun(
                 {
                   taskId: task.taskId,
                   siteId: task.siteId,

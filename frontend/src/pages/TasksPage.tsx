@@ -19,6 +19,9 @@ import {
   getTaskDeleteStats,
   batchDeleteTasks,
   createArrivalDryRunTask,
+  createAgentDispatchTask,
+  createAgentIntegratedTask,
+  createAgentSignTask,
   type TaskItem,
   type TaskListResponse,
   type TaskStatsResponse,
@@ -940,6 +943,21 @@ export default function TasksPage() {
   const [dryRunWaybills, setDryRunWaybills] = useState('TEST000000001\nTEST000000002');
   const [dryRunCreating, setDryRunCreating] = useState(false);
 
+  // ── Phase 5-E: 派件 DRY-RUN 创建 ──
+  const [showDispatchModal, setShowDispatchModal] = useState(false);
+  const [dispatchWaybills, setDispatchWaybills] = useState('TEST000000001\nTEST000000002');
+  const [dispatchCreating, setDispatchCreating] = useState(false);
+
+  // ── Phase 5-E: 到派一体 DRY-RUN 创建 ──
+  const [showIntegratedModal, setShowIntegratedModal] = useState(false);
+  const [integratedWaybills, setIntegratedWaybills] = useState('TEST000000001\nTEST000000002');
+  const [integratedCreating, setIntegratedCreating] = useState(false);
+
+  // ── Phase 5-E: 签收 DRY-RUN 创建 ──
+  const [showSignModal, setShowSignModal] = useState(false);
+  const [signWaybills, setSignWaybills] = useState('TEST000000001\nTEST000000002');
+  const [signCreating, setSignCreating] = useState(false);
+
   // ── 判断任务是否可删除 ──
   const isTaskDeletable = (task: TaskItem) =>
     task.status !== 'running' && task.status !== 'pending';
@@ -1137,6 +1155,96 @@ export default function TasksPage() {
     }
   };
 
+  // ── Phase 5-E: 创建派件浏览器 DRY-RUN 任务 ──
+  const handleCreateDispatch = async () => {
+    const waybills = dispatchWaybills
+      .split('\n')
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
+    if (waybills.length === 0) {
+      setToastMsg('请输入至少一条运单号');
+      return;
+    }
+    setDispatchCreating(true);
+    try {
+      const resp = await createAgentDispatchTask({
+        siteId: 'site-1782121346155',
+        siteName: '天南大',
+        courierName: '肖飞',
+        waybills,
+        options: { prevStation: '天津分拨中心', batchSize: 200 },
+        browserDryRun: true,
+      });
+      setToastMsg(`派件 DRY-RUN 任务已创建：${resp.taskId.slice(0, 8)}...`);
+      setShowDispatchModal(false);
+      setTimeout(() => loadTasks(), 500);
+    } catch (e) {
+      setToastMsg(`创建失败：${(e as Error).message}`);
+    } finally {
+      setDispatchCreating(false);
+    }
+  };
+
+  // ── Phase 5-E: 创建到派一体浏览器 DRY-RUN 任务 ──
+  const handleCreateIntegrated = async () => {
+    const waybills = integratedWaybills
+      .split('\n')
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
+    if (waybills.length === 0) {
+      setToastMsg('请输入至少一条运单号');
+      return;
+    }
+    setIntegratedCreating(true);
+    try {
+      const resp = await createAgentIntegratedTask({
+        siteId: 'site-1782121346155',
+        siteName: '天南大',
+        courierName: '肖飞',
+        waybills,
+        options: { prevStation: '天津分拨中心', batchSize: 200 },
+        browserDryRun: true,
+      });
+      setToastMsg(`到派一体 DRY-RUN 任务已创建：${resp.taskId.slice(0, 8)}...`);
+      setShowIntegratedModal(false);
+      setTimeout(() => loadTasks(), 500);
+    } catch (e) {
+      setToastMsg(`创建失败：${(e as Error).message}`);
+    } finally {
+      setIntegratedCreating(false);
+    }
+  };
+
+  // ── Phase 5-E: 创建签收浏览器 DRY-RUN 任务 ──
+  const handleCreateSign = async () => {
+    const waybills = signWaybills
+      .split('\n')
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
+    if (waybills.length === 0) {
+      setToastMsg('请输入至少一条运单号');
+      return;
+    }
+    setSignCreating(true);
+    try {
+      const resp = await createAgentSignTask({
+        siteId: 'site-1782121346155',
+        siteName: '天南大',
+        courierName: '肖飞',
+        waybills,
+        options: { prevStation: '天津分拨中心', batchSize: 200 },
+        browserDryRun: true,
+      });
+      setToastMsg(`签收 DRY-RUN 任务已创建：${resp.taskId.slice(0, 8)}...`);
+      setShowSignModal(false);
+      setTimeout(() => loadTasks(), 500);
+    } catch (e) {
+      setToastMsg(`创建失败：${(e as Error).message}`);
+    } finally {
+      setSignCreating(false);
+    }
+  };
+
   return (
     <div className="space-y-4 max-w-[1600px] mx-auto">
       {/* Page Header */}
@@ -1175,6 +1283,27 @@ export default function TasksPage() {
           >
             <PlayCircle className="w-3.5 h-3.5" />
             到件 DRY-RUN
+          </button>
+          <button
+            onClick={() => setShowDispatchModal(true)}
+            className="flex items-center gap-1.5 px-3 h-8 rounded-btn bg-primary text-white text-[13px] font-medium hover:bg-primary/90 transition-colors"
+          >
+            <PlayCircle className="w-3.5 h-3.5" />
+            派件 DRY-RUN
+          </button>
+          <button
+            onClick={() => setShowIntegratedModal(true)}
+            className="flex items-center gap-1.5 px-3 h-8 rounded-btn bg-primary text-white text-[13px] font-medium hover:bg-primary/90 transition-colors"
+          >
+            <PlayCircle className="w-3.5 h-3.5" />
+            到派一体 DRY-RUN
+          </button>
+          <button
+            onClick={() => setShowSignModal(true)}
+            className="flex items-center gap-1.5 px-3 h-8 rounded-btn bg-primary text-white text-[13px] font-medium hover:bg-primary/90 transition-colors"
+          >
+            <PlayCircle className="w-3.5 h-3.5" />
+            签收 DRY-RUN
           </button>
           <button
             onClick={() => loadTasks()}
@@ -1650,6 +1779,162 @@ export default function TasksPage() {
               >
                 {dryRunCreating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlayCircle className="w-3.5 h-3.5" />}
                 {dryRunCreating ? '创建中...' : '创建任务'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Phase 5-E: 派件 DRY-RUN 创建弹窗 ── */}
+      {showDispatchModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => !dispatchCreating && setShowDispatchModal(false)}>
+          <div className="absolute inset-0 bg-black/40" />
+          <div
+            className="relative z-10 bg-surface rounded-card shadow-xl border border-border w-[480px] max-w-[90vw]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+              <h3 className="text-[16px] font-semibold text-text-primary">创建派件扫描 DRY-RUN 任务</h3>
+              <button
+                onClick={() => !dispatchCreating && setShowDispatchModal(false)}
+                className="w-7 h-7 flex items-center justify-center rounded-btn hover:bg-surface-light text-text-tertiary"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="px-5 py-4 space-y-4">
+              <div>
+                <label className="block text-[13px] font-medium text-text-secondary mb-1.5">运单号（每行一条）</label>
+                <textarea
+                  value={dispatchWaybills}
+                  onChange={(e) => setDispatchWaybills(e.target.value)}
+                  disabled={dispatchCreating}
+                  rows={5}
+                  className="w-full px-3 py-2 text-[13px] border border-border rounded-btn bg-surface-bg resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-60"
+                  placeholder="TEST000000001&#10;TEST000000002"
+                />
+                <p className="text-[12px] text-text-tertiary mt-1">网点：天南大 · 派件员：肖飞 · 浏览器 DRY-RUN 模式（不点击最终提交）</p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border bg-surface-bg rounded-b-card">
+              <button
+                onClick={() => setShowDispatchModal(false)}
+                disabled={dispatchCreating}
+                className="px-3 h-8 rounded-btn border border-border text-[13px] text-text-secondary hover:bg-surface-light transition-colors disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleCreateDispatch}
+                disabled={dispatchCreating}
+                className="flex items-center gap-1.5 px-4 h-8 rounded-btn bg-primary text-white text-[13px] font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+              >
+                {dispatchCreating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlayCircle className="w-3.5 h-3.5" />}
+                {dispatchCreating ? '创建中...' : '创建任务'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Phase 5-E: 到派一体 DRY-RUN 创建弹窗 ── */}
+      {showIntegratedModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => !integratedCreating && setShowIntegratedModal(false)}>
+          <div className="absolute inset-0 bg-black/40" />
+          <div
+            className="relative z-10 bg-surface rounded-card shadow-xl border border-border w-[480px] max-w-[90vw]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+              <h3 className="text-[16px] font-semibold text-text-primary">创建到派一体 DRY-RUN 任务</h3>
+              <button
+                onClick={() => !integratedCreating && setShowIntegratedModal(false)}
+                className="w-7 h-7 flex items-center justify-center rounded-btn hover:bg-surface-light text-text-tertiary"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="px-5 py-4 space-y-4">
+              <div>
+                <label className="block text-[13px] font-medium text-text-secondary mb-1.5">运单号（每行一条）</label>
+                <textarea
+                  value={integratedWaybills}
+                  onChange={(e) => setIntegratedWaybills(e.target.value)}
+                  disabled={integratedCreating}
+                  rows={5}
+                  className="w-full px-3 py-2 text-[13px] border border-border rounded-btn bg-surface-bg resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-60"
+                  placeholder="TEST000000001&#10;TEST000000002"
+                />
+                <p className="text-[12px] text-text-tertiary mt-1">网点：天南大 · 派件员：肖飞 · 浏览器 DRY-RUN 模式（不点击最终提交）</p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border bg-surface-bg rounded-b-card">
+              <button
+                onClick={() => setShowIntegratedModal(false)}
+                disabled={integratedCreating}
+                className="px-3 h-8 rounded-btn border border-border text-[13px] text-text-secondary hover:bg-surface-light transition-colors disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleCreateIntegrated}
+                disabled={integratedCreating}
+                className="flex items-center gap-1.5 px-4 h-8 rounded-btn bg-primary text-white text-[13px] font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+              >
+                {integratedCreating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlayCircle className="w-3.5 h-3.5" />}
+                {integratedCreating ? '创建中...' : '创建任务'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Phase 5-E: 签收 DRY-RUN 创建弹窗 ── */}
+      {showSignModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => !signCreating && setShowSignModal(false)}>
+          <div className="absolute inset-0 bg-black/40" />
+          <div
+            className="relative z-10 bg-surface rounded-card shadow-xl border border-border w-[480px] max-w-[90vw]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+              <h3 className="text-[16px] font-semibold text-text-primary">创建签收录入 DRY-RUN 任务</h3>
+              <button
+                onClick={() => !signCreating && setShowSignModal(false)}
+                className="w-7 h-7 flex items-center justify-center rounded-btn hover:bg-surface-light text-text-tertiary"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="px-5 py-4 space-y-4">
+              <div>
+                <label className="block text-[13px] font-medium text-text-secondary mb-1.5">运单号（每行一条）</label>
+                <textarea
+                  value={signWaybills}
+                  onChange={(e) => setSignWaybills(e.target.value)}
+                  disabled={signCreating}
+                  rows={5}
+                  className="w-full px-3 py-2 text-[13px] border border-border rounded-btn bg-surface-bg resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-60"
+                  placeholder="TEST000000001&#10;TEST000000002"
+                />
+                <p className="text-[12px] text-text-tertiary mt-1">网点：天南大 · 派件员：肖飞 · 浏览器 DRY-RUN 模式（不点击最终提交）</p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border bg-surface-bg rounded-b-card">
+              <button
+                onClick={() => setShowSignModal(false)}
+                disabled={signCreating}
+                className="px-3 h-8 rounded-btn border border-border text-[13px] text-text-secondary hover:bg-surface-light transition-colors disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleCreateSign}
+                disabled={signCreating}
+                className="flex items-center gap-1.5 px-4 h-8 rounded-btn bg-primary text-white text-[13px] font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+              >
+                {signCreating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlayCircle className="w-3.5 h-3.5" />}
+                {signCreating ? '创建中...' : '创建任务'}
               </button>
             </div>
           </div>
