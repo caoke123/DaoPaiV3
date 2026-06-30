@@ -24,6 +24,10 @@ runtime/downloads/
 runtime/profiles/
 runtime/chrome-profile/
 runtime/chrome-profile-test/
+runtime/browser-session.json
+
+# 便携版 Chrome（不提交）
+Chrome/
 
 # 环境变量
 .env

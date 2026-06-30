@@ -1,18 +1,21 @@
 /**
  * testBnsySessionP0.ts — 笨鸟登录状态保持与 Dashboard P0 检测
  *
- * Phase 5-C-5: 检测当前登录状态，复用已有登录态，
- * 未登录时自动登录，然后验证 Dashboard P0 是否就绪。
+ * Phase 5-C-5 修复版：Chrome 原生弹窗治理 + 进程隔离 + P0 READY。
  *
  * 硬性约束：
  *   - 不打印密码
  *   - 不执行业务
  *   - 不点击业务菜单
+ *   - 不 taskkill /IM chrome.exe
+ *   - 不误关系统正式版 Chrome
  */
 
 import { BrowserManager } from './browser/BrowserManager';
 import { ensureBnsyLoggedIn } from './browser/BnsySessionManager';
 import { AgentSettingsLoader } from './AgentSettingsLoader';
+import { readSession, clearSession } from './browser/BrowserProcessRegistry';
+import { checkPort } from './browser/ChromeProcessGuard';
 
 function maskAccount(account: string): string {
   if (account.length <= 4) return '****';
@@ -22,7 +25,7 @@ function maskAccount(account: string): string {
 async function main() {
   console.log('═══════════════════════════════════════════');
   console.log('  DaoPai V3 登录状态与 Dashboard P0 检测');
-  console.log('  Phase 5-C-5');
+  console.log('  Phase 5-C-5 修复版：Chrome 原生弹窗治理');
   console.log('═══════════════════════════════════════════\n');
 
   // ── 配置 ──
@@ -37,7 +40,7 @@ async function main() {
   };
 
   // ── 1. 读取凭据 ──
-  console.log('[1/5] 读取员工凭据...');
+  console.log('[1/6] 读取员工凭据...');
   const settingsLoader = new AgentSettingsLoader();
   const credential = await settingsLoader.getLoginCredentialForSite(siteId);
 
@@ -51,19 +54,19 @@ async function main() {
   console.log(`  账号：${maskAccount(credential.loginAccount)}`);
   console.log('');
 
-  // ── 2. 启动浏览器 ──
-  console.log('[2/5] 启动便携版 Chrome...');
+  // ── 2. 启动浏览器（含端口检查 + Profile 消毒 + 进程注册） ──
+  console.log('[2/6] 启动便携版 Chrome（含安全前置检查）...');
   const manager = new BrowserManager(browserConfig);
   await manager.start();
-  console.log('  便携版 Chrome 启动成功\n');
+  console.log('');
 
   // ── 3. CDP 连接 ──
-  console.log('[3/5] 等待 CDP 就绪并连接...');
+  console.log('[3/6] 等待 CDP 就绪并连接...');
   await manager.connect();
-  console.log('  CDP 连接成功\n');
+  console.log('');
 
   // ── 4. 打开登录页 ──
-  console.log('[4/5] 打开页面并检测登录状态...');
+  console.log('[4/6] 打开页面...');
   console.log(`  正在打开：${loginUrl}`);
 
   let page;
@@ -75,10 +78,11 @@ async function main() {
     process.exit(1);
   }
 
-  console.log('  页面打开成功');
-  console.log('  正在检测登录状态...\n');
+  console.log('  页面打开成功，等待加载...\n');
+  await page.waitForTimeout(5000);
 
   // ── 5. 确保登录 + Dashboard P0 检测 ──
+  console.log('[5/6] 确保登录并检测 Dashboard P0...\n');
   const result = await ensureBnsyLoggedIn(page, credential);
 
   // ── 输出报告 ──
@@ -106,6 +110,37 @@ async function main() {
   }
   console.log('');
 
+  // ── Chrome 隔离信息 ──
+  console.log('  ── Chrome 隔离信息 ──');
+  const session = readSession();
+  if (session) {
+    console.log(`  Chrome PID：${session.pid}`);
+    console.log(`  Chrome 路径：${session.executablePath}`);
+    console.log(`  User Data Dir：${session.userDataDir}`);
+    console.log(`  调试端口：${session.debugPort}`);
+    console.log(`  实例 ID：${session.instanceId}`);
+  }
+
+  // 端口归属检查
+  const portCheck = checkPort(browserConfig.debugPort);
+  console.log(`  端口 ${browserConfig.debugPort} 归属：${portCheck.occupied ? (portCheck.isV3Chrome ? 'V3 Chrome' : '非 V3 Chrome') : '未占用'}`);
+  if (portCheck.occupied && !portCheck.isV3Chrome) {
+    console.log(`    ⚠ 警告：端口被非 V3 Chrome 占用！PID: ${portCheck.pid}, 路径: ${portCheck.executablePath}`);
+  }
+  console.log('');
+
+  // ── 安全边界 ──
+  console.log('  ── 安全边界 ──');
+  console.log('  未点击业务菜单');
+  console.log('  未点击业务按钮');
+  console.log('  未执行到件扫描');
+  console.log('  未处理运单');
+  console.log('  未打印密码');
+  console.log('  未上传密码');
+  console.log('  未使用 taskkill /IM chrome.exe');
+  console.log('  未误关系统正式版 Chrome');
+  console.log('');
+
   if (result.warnings.length > 0) {
     console.log('  ── 警告 ──');
     for (const w of result.warnings) {
@@ -114,18 +149,10 @@ async function main() {
     console.log('');
   }
 
-  console.log('  ── 安全边界 ──');
-  console.log('  未点击业务菜单');
-  console.log('  未点击业务按钮');
-  console.log('  未执行到件扫描');
-  console.log('  未处理运单');
-  console.log('  未打印密码');
-  console.log('  未上传密码');
-  console.log('');
-
   // ── 6. 关闭 ──
-  console.log('[5/5] 关闭浏览器...');
+  console.log('[6/6] 安全关闭浏览器...');
   await manager.close();
+  clearSession();
   console.log('  检测完成，浏览器已关闭\n');
 
   console.log('═══════════════════════════════════════════');
@@ -134,12 +161,19 @@ async function main() {
   console.log(`  网点：${credential.siteName}`);
   console.log(`  员工：${credential.employeeName}`);
   console.log(`  账号：${maskAccount(credential.loginAccount)}`);
-  console.log(`  P0 状态：${d.status}`);
-  console.log(`  结果：${result.success ? '通过' : '未通过'}`);
+  console.log(`  最终 P0 状态：${d.status}`);
+  console.log(`  结果：${d.status === 'READY' ? '通过' : '未通过 (必须 READY)'}`);
   console.log('═══════════════════════════════════════════\n');
+
+  // 最终必须是 READY
+  if (d.status !== 'READY') {
+    console.error('错误：最终 P0 状态不是 READY，本阶段未通过！');
+    process.exit(1);
+  }
 }
 
 main().catch((err) => {
   console.error('\n检测失败：', err.message);
+  clearSession();
   process.exit(1);
 });

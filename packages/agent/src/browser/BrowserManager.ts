@@ -2,12 +2,14 @@
  * BrowserManager — Agent 浏览器管理器
  *
  * Phase 5-C-1: 封装便携版 Chrome 的启动、CDP 连接、页面管理、健康检查与关闭。
+ * Phase 5-C-5 修复版：集成 ChromeProfileSanitizer、BrowserProcessRegistry、ChromeProcessGuard。
  *
  * 硬性约束：
  *   - 只连接项目内便携版 Chrome
  *   - 不连接系统正式版 Chrome
  *   - 不使用用户默认 Chrome Profile
- *   - 不登录、不执行业务、不点击按钮
+ *   - 禁止 taskkill /IM chrome.exe
+ *   - 关闭前必须校验 PID 归属
  */
 
 import * as fs from 'fs';
@@ -15,6 +17,9 @@ import * as http from 'http';
 import { spawn, type ChildProcess } from 'child_process';
 import type { BrowserConfig } from '../types';
 import type { Browser, Page } from 'playwright-core';
+import { sanitizeChromeProfile } from './ChromeProfileSanitizer';
+import { saveSession, readSession, clearSession } from './BrowserProcessRegistry';
+import { checkPort, canKillProcess, killProcess } from './ChromeProcessGuard';
 
 export interface BrowserHealthResult {
   connected: boolean;
@@ -34,31 +39,60 @@ export class BrowserManager {
   }
 
   // ══════════════════════════════════════════════════════════
-  // 1. start() — 启动便携版 Chrome
+  // 1. start() — 启动便携版 Chrome（含安全前置检查）
   // ══════════════════════════════════════════════════════════
 
   async start(): Promise<void> {
     const { executablePath, userDataDir, debugPort } = this.config;
 
-    // 检查 chrome.exe 是否存在
+    // 1a. 检查 chrome.exe 是否存在
     if (!fs.existsSync(executablePath)) {
       throw new Error(`未找到项目内便携版 Chrome，请检查路径：${executablePath}`);
     }
 
-    // 创建独立用户目录
+    // 1b. ChromeProcessGuard: 检查端口归属
+    console.log('  [ChromeProcessGuard] 检查端口归属...');
+    const portCheck = checkPort(debugPort);
+    if (portCheck.occupied && !portCheck.isV3Chrome) {
+      throw new Error(
+        `端口 ${debugPort} 被非 V3 Chrome 占用，禁止连接。\n` +
+        `  占用进程 PID: ${portCheck.pid}\n` +
+        `  占用进程路径: ${portCheck.executablePath}\n` +
+        `  请先关闭占用端口的 Chrome 进程后重试。`
+      );
+    }
+    if (portCheck.occupied && portCheck.isV3Chrome) {
+      console.log(`  [ChromeProcessGuard] 端口 ${debugPort} 由 V3 Chrome 占用 (PID: ${portCheck.pid})，将复用`);
+    } else {
+      console.log(`  [ChromeProcessGuard] ${portCheck.message}`);
+    }
+
+    // 1c. ChromeProfileSanitizer: 清理 Profile 防止原生弹窗
+    console.log('  [ChromeProfileSanitizer] 清理 Profile...');
+    await sanitizeChromeProfile(userDataDir);
+
+    // 1d. 创建独立用户目录
     if (!fs.existsSync(userDataDir)) {
       fs.mkdirSync(userDataDir, { recursive: true });
     }
 
-    // 启动 Chrome
+    // 1e. 启动 Chrome（完整压制原生弹窗的启动参数）
     const args = [
       `--remote-debugging-port=${debugPort}`,
       `--user-data-dir=${userDataDir}`,
+      '--profile-directory=Default',
       '--no-first-run',
       '--no-default-browser-check',
-      '--disable-background-networking',
+      '--disable-session-crashed-bubble',
+      '--disable-infobars',
+      '--disable-save-password-bubble',
       '--disable-sync',
       '--disable-extensions',
+      '--disable-component-update',
+      '--disable-background-networking',
+      '--disable-features=Translate,PasswordManagerOnboarding,AutofillServerCommunication,AutofillAddressSavePrompt,AutofillCreditCardUpload,OptimizationHints',
+      '--password-store=basic',
+      '--use-mock-keychain',
       'about:blank',
     ];
 
@@ -71,7 +105,15 @@ export class BrowserManager {
       throw new Error(`Chrome 进程启动失败：${err.message}`);
     });
 
-    console.log(`  便携版 Chrome 启动成功，PID: ${this.chromeProcess.pid}`);
+    const pid = this.chromeProcess.pid;
+    if (!pid) {
+      throw new Error('Chrome 进程启动后无法获取 PID');
+    }
+
+    // 1f. BrowserProcessRegistry: 记录 V3 Chrome 身份
+    saveSession(pid, debugPort, executablePath, userDataDir);
+
+    console.log(`  便携版 Chrome 启动成功，PID: ${pid}`);
     console.log(`  调试端口：${debugPort}`);
     console.log(`  用户目录：${userDataDir}`);
   }
@@ -210,11 +252,11 @@ export class BrowserManager {
   }
 
   // ══════════════════════════════════════════════════════════
-  // 5. close() — 关闭连接和 Chrome 进程
+  // 5. close() — 安全关闭连接和 Chrome 进程
   // ══════════════════════════════════════════════════════════
 
   async close(): Promise<void> {
-    // 关闭 Playwright CDP 连接
+    // 5a. 关闭 Playwright CDP 连接
     if (this.browser) {
       try {
         await this.browser.close();
@@ -226,15 +268,57 @@ export class BrowserManager {
       this.page = null;
     }
 
-    // 关闭 Chrome 进程
-    if (this.chromeProcess) {
-      try {
-        this.chromeProcess.kill();
-        console.log('  Chrome 进程已关闭');
-      } catch {
-        console.warn('  无法优雅关闭 Chrome 进程，请手动检查任务管理器');
-      }
-      this.chromeProcess = null;
+    // 5b. 从注册表读取本次 V3 Chrome PID
+    const session = readSession();
+    const pid = this.chromeProcess?.pid || session?.pid;
+
+    if (!pid) {
+      console.log('  未找到 V3 Chrome 会话记录，跳过进程关闭');
+      clearSession();
+      return;
     }
+
+    // 5c. 等待 Chrome 自然退出
+    console.log('  等待 Chrome 自然退出...');
+    await new Promise((r) => setTimeout(r, 2000));
+
+    // 5d. 检查 Chrome 是否还活着
+    const isAlive = this.chromeProcess && !this.chromeProcess.killed;
+    if (!isAlive && !session) {
+      console.log('  Chrome 已自然退出');
+      clearSession();
+      return;
+    }
+
+    // 5e. ChromeProcessGuard: 校验 PID 归属
+    console.log(`  [ChromeProcessGuard] 校验 PID ${pid} 归属...`);
+    const killCheck = canKillProcess(pid);
+    console.log(`  [ChromeProcessGuard] ${killCheck.message}`);
+
+    if (!killCheck.allowed) {
+      console.log('  拒绝关闭，请手动处理残留的 Chrome 进程');
+      clearSession();
+      return;
+    }
+
+    // 如果进程已自然退出，无需 kill
+    if (killCheck.message.includes('已自然退出')) {
+      console.log('  Chrome 已自然退出，无需强制关闭');
+      clearSession();
+      this.chromeProcess = null;
+      return;
+    }
+
+    // 5f. 关闭 V3 Chrome 进程
+    const killResult = killProcess(pid);
+    if (killResult.success) {
+      console.log(`  ${killResult.message}`);
+    } else {
+      console.warn(`  ${killResult.message}`);
+    }
+
+    // 5g. 清理注册表
+    clearSession();
+    this.chromeProcess = null;
   }
 }

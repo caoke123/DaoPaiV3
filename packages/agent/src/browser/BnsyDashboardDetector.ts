@@ -82,12 +82,17 @@ export async function detectBnsyDashboardP0(page: Page): Promise<DashboardP0Resu
     }
   }
 
-  // 2. 检测阻塞弹窗
+  // 2. 检测阻塞弹窗（仅检测可见的，隐藏 DOM 模板不计入）
   let hasBlockedPopup = false;
   for (const sel of BLOCKING_POPUP_SELECTORS) {
     try {
-      const count = await page.$$eval(sel, els => els.length);
-      if (count > 0) {
+      const visibleCount = await page.$$eval(sel, els =>
+        els.filter(el => {
+          const style = window.getComputedStyle(el as HTMLElement);
+          return style.display !== 'none' && style.visibility !== 'hidden' && (el as HTMLElement).offsetWidth > 0;
+        }).length
+      );
+      if (visibleCount > 0) {
         popupSelectorsMatched.push(sel);
         hasBlockedPopup = true;
       }

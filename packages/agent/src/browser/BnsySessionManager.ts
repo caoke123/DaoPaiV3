@@ -24,6 +24,96 @@ export interface EnsureLoginResult {
   warnings: string[];
 }
 
+/**
+ * 清理页面可见阻塞弹窗
+ *
+ * 策略：
+ *   1. 扫描可见弹窗（.el-dialog__wrapper, .el-message-box__wrapper, [role="dialog"]）
+ *   2. 尝试点击关闭按钮：取消、确定、我知道了、关闭、×、知道了
+ *   3. 不点击任何业务按钮（到件/派件/签收/提交/批量/保存业务数据）
+ *   4. 每次点击后等待 500-800ms
+ *   5. 最多循环 5 轮
+ *   6. 每轮重新检测
+ */
+async function cleanBlockingPopups(page: Page): Promise<{ cleaned: boolean; actions: string[] }> {
+  const actions: string[] = [];
+
+  // 安全关闭按钮文本（不包含业务关键词）
+  const SAFE_CLOSE_TEXTS = ['取消', '确定', '我知道了', '关闭', '×', '知道了'];
+
+  // 业务关键词黑名单：如果按钮文本包含这些词，禁止点击
+  const BUSINESS_BLACKLIST = ['到件', '派件', '签收', '提交', '批量', '保存业务数据', '确认提交'];
+
+  for (let round = 0; round < 5; round++) {
+    try {
+      const result = await page.evaluate(({ safeTexts, blacklist }) => {
+        // 检查是否有可见弹窗
+        const popupSelectors = ['.el-dialog__wrapper', '.el-message-box__wrapper', '[role="dialog"]'];
+        let hasVisiblePopup = false;
+
+        for (const sel of popupSelectors) {
+          const els = document.querySelectorAll(sel);
+          for (const el of els) {
+            const style = window.getComputedStyle(el as HTMLElement);
+            if (style.display !== 'none' && style.visibility !== 'hidden' && (el as HTMLElement).offsetWidth > 0) {
+              hasVisiblePopup = true;
+              break;
+            }
+          }
+          if (hasVisiblePopup) break;
+        }
+
+        if (!hasVisiblePopup) return { closed: false, action: '无可见弹窗' };
+
+        // 尝试在可见弹窗中找安全关闭按钮
+        for (const sel of popupSelectors) {
+          const els = document.querySelectorAll(sel);
+          for (const el of els) {
+            const style = window.getComputedStyle(el as HTMLElement);
+            if (style.display === 'none' || style.visibility === 'hidden' || (el as HTMLElement).offsetWidth === 0) continue;
+
+            const btns = el.querySelectorAll('button, .el-button, [class*="btn"]');
+            for (const btn of btns) {
+              const text = (btn.textContent || '').replace(/\s+/g, '');
+
+              // 检查黑名单
+              const isBlacklisted = blacklist.some((kw: string) => text.includes(kw));
+              if (isBlacklisted) continue;
+
+              // 检查是否安全关闭按钮
+              const isSafeClose = safeTexts.some((st: string) => text === st || text.includes(st));
+              if (isSafeClose) {
+                (btn as HTMLElement).click();
+                return { closed: true, action: `点击了"${text}"按钮关闭弹窗` };
+              }
+            }
+          }
+        }
+
+        return { closed: false, action: '未找到安全关闭按钮' };
+      }, { safeTexts: SAFE_CLOSE_TEXTS, blacklist: BUSINESS_BLACKLIST });
+
+      if (result.closed) {
+        actions.push(`第${round + 1}轮: ${result.action}`);
+        await page.waitForTimeout(500 + Math.random() * 300);
+      } else {
+        // 没有找到可关闭的弹窗，退出循环
+        if (result.action === '无可见弹窗') {
+          actions.push(`第${round + 1}轮: ${result.action}`);
+          break;
+        }
+        actions.push(`第${round + 1}轮: ${result.action}，停止清理`);
+        break;
+      }
+    } catch {
+      actions.push(`第${round + 1}轮: 清理出错，停止`);
+      break;
+    }
+  }
+
+  return { cleaned: actions.length > 0, actions };
+}
+
 export async function ensureBnsyLoggedIn(
   page: Page,
   credential: LoginCredential,
@@ -45,13 +135,31 @@ export async function ensureBnsyLoggedIn(
   }
 
   if (before.status === 'BLOCKED_POPUP') {
-    warnings.push('Dashboard 存在阻塞弹窗，需要人工处理');
+    console.log('  检测到阻塞弹窗，尝试清理...');
+    const cleanResult = await cleanBlockingPopups(page);
+    if (cleanResult.actions.length > 0) {
+      console.log(`  弹窗清理动作: ${cleanResult.actions.join('; ')}`);
+    }
+
+    const afterClean = await detectBnsyDashboardP0(page);
+    if (afterClean.status === 'READY') {
+      return {
+        success: true,
+        reusedSession: true,
+        loginAttempted: false,
+        dashboard: afterClean,
+        message: '弹窗已关闭，Dashboard 就绪',
+        warnings,
+      };
+    }
+
+    warnings.push(`Dashboard 存在阻塞弹窗，无法自动关闭。清理动作: ${cleanResult.actions.join('; ') || '无'}`);
     return {
       success: false,
       reusedSession: false,
       loginAttempted: false,
-      dashboard: before,
-      message: 'Dashboard 存在阻塞弹窗，无法继续',
+      dashboard: afterClean,
+      message: 'Dashboard 存在阻塞弹窗，无法自动关闭',
       warnings,
     };
   }
@@ -88,7 +196,17 @@ export async function ensureBnsyLoggedIn(
 
     // 3. 登录成功，再次检测 Dashboard P0
     console.log('  登录成功，检测 Dashboard P0...');
-    const after = await detectBnsyDashboardP0(page);
+    let after = await detectBnsyDashboardP0(page);
+
+    // 登录后如果有阻塞弹窗，尝试清理
+    if (after.status === 'BLOCKED_POPUP') {
+      console.log('  登录后检测到阻塞弹窗，尝试清理...');
+      const cleanResult = await cleanBlockingPopups(page);
+      if (cleanResult.actions.length > 0) {
+        console.log(`  弹窗清理动作: ${cleanResult.actions.join('; ')}`);
+      }
+      after = await detectBnsyDashboardP0(page);
+    }
 
     if (after.status === 'READY') {
       return {
