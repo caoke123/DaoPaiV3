@@ -148,8 +148,9 @@ export function TaskExecutionProvider({ children }: { children: ReactNode }) {
   // ── 从 PG 日志全量替换 workerLogs（Agent 任务日志在 PG，SSE 收不到）──
   // Agent 日志可能没有 staffName，此时分发给所有选中员工，保证日志区域不空白
   const setLogsFromPg = useCallback((logs: ApiTaskLogEntry[]) => {
+    const workers = selectedWorkersRef.current;
+    console.log(`[LiveLogs] setLogsFromPg logs=${logs.length} workers=${workers.length}`);
     setWorkerLogs(prev => {
-      const workers = selectedWorkersRef.current;
       const next: WorkerLogs = {};
       for (const name of workers) {
         next[name] = [];
@@ -170,6 +171,10 @@ export function TaskExecutionProvider({ children }: { children: ReactNode }) {
         if (next[name].length > MAX_LOGS_PER_WORKER) {
           next[name] = next[name].slice(-MAX_LOGS_PER_WORKER);
         }
+      }
+      // 调试：输出每个 worker 的日志数
+      for (const name of workers) {
+        console.log(`[LiveLogs] worker=${name} logs=${next[name]?.length || 0}`);
       }
       return next;
     });
@@ -222,7 +227,8 @@ export function TaskExecutionProvider({ children }: { children: ReactNode }) {
       initialWl[name] = [];
       initialWp[name] = { done: 0, total: allocs[name] || 0, failed: 0 };
     });
-    setWorkerLogs(initialWl);
+    // 注意：不在此处 setWorkerLogs(initialWl)，避免覆盖 PG 日志轮询的实时日志
+    // PG 日志轮询 useEffect 会全量替换 workerLogs
     setWorkerProgress(initialWp);
 
     const esUrl = `/api/operations/${taskId}/events`;
@@ -343,22 +349,25 @@ export function TaskExecutionProvider({ children }: { children: ReactNode }) {
   }, [taskId, liveStatus, appendLogToWorker, updateProgressFromResults]);
 
   // ── PG 日志 + 状态轮询（Agent 任务日志在 PG task_logs，SSE 收不到）──
+  // 日志轮询与状态轮询解耦：taskId 存在即启动，不依赖 liveStatus
   // pending/assigned/running 阶段持续轮询，done/failed/cancelled 后拉最终日志并停止
   useEffect(() => {
-    if (!taskId || liveStatus !== 'running') {
+    if (!taskId) {
       if (pgLogPollRef.current) { clearInterval(pgLogPollRef.current); pgLogPollRef.current = null; }
       if (pgStatusPollRef.current) { clearInterval(pgStatusPollRef.current); pgStatusPollRef.current = null; }
       return;
     }
 
     pgCompletedRef.current = false;
+    console.log(`[LiveLogs] start polling taskId=${taskId}`);
 
-    // 立即拉一次日志
+    // 立即拉一次日志（不等 status=running）
     getTaskLogsById(taskId, 200).then(data => {
+      console.log(`[LiveLogs] initial fetch logs=${data.logs.length}`);
       setLogsFromPg(data.logs);
     }).catch(() => {});
 
-    // 日志轮询：1.5 秒，全量替换 workerLogs
+    // 日志轮询：1.5 秒，全量替换 workerLogs（不依赖 status）
     pgLogPollRef.current = setInterval(async () => {
       if (pgCompletedRef.current) return;
       try {
@@ -369,7 +378,7 @@ export function TaskExecutionProvider({ children }: { children: ReactNode }) {
       }
     }, 1500);
 
-    // 状态轮询：2 秒，用 PG 状态判断任务是否结束
+    // 状态轮询：2 秒，独立启动，用于判断任务是否结束
     pgStatusPollRef.current = setInterval(async () => {
       if (pgCompletedRef.current) return;
       try {
@@ -382,6 +391,7 @@ export function TaskExecutionProvider({ children }: { children: ReactNode }) {
 
         if (s.status === 'done' || s.status === 'failed' || s.status === 'cancelled') {
           pgCompletedRef.current = true;
+          console.log(`[LiveLogs] stop polling status=${s.status}`);
           // 拉最终日志
           try {
             const data = await getTaskLogsById(taskId, 200);
@@ -407,7 +417,7 @@ export function TaskExecutionProvider({ children }: { children: ReactNode }) {
       if (pgLogPollRef.current) { clearInterval(pgLogPollRef.current); pgLogPollRef.current = null; }
       if (pgStatusPollRef.current) { clearInterval(pgStatusPollRef.current); pgStatusPollRef.current = null; }
     };
-  }, [taskId, liveStatus, setLogsFromPg]);
+  }, [taskId, setLogsFromPg]);
 
   const startTask = useCallback((tid: string, workers: string[], allocs: Allocations, origin: string) => {
     selectedWorkersRef.current = workers;
