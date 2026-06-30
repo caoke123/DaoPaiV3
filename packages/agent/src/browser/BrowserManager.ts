@@ -153,6 +153,24 @@ export class BrowserManager {
   }
 
   // ══════════════════════════════════════════════════════════
+  // 3b. openPage() — 打开指定 URL
+  // ══════════════════════════════════════════════════════════
+
+  async openPage(url: string): Promise<Page> {
+    if (!this.browser) {
+      throw new Error('浏览器未连接，请先调用 connect()');
+    }
+
+    const context = this.browser.contexts()[0] || this.browser.newContext();
+    const pages = context.pages();
+    this.page = pages.length > 0 ? pages[0] : await context.newPage();
+
+    await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+
+    return this.page;
+  }
+
+  // ══════════════════════════════════════════════════════════
   // 4. healthCheck() — 基础健康检查
   // ══════════════════════════════════════════════════════════
 

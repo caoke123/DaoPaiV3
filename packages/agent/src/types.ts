@@ -14,6 +14,12 @@ export interface BrowserConfig {
   headless: boolean;
 }
 
+/** 笨鸟系统配置 */
+export interface BnsyConfig {
+  /** 笨鸟登录页地址 */
+  loginUrl: string;
+}
+
 /** Agent 配置 */
 export interface AgentConfig {
   /** Cloud 后端地址 */
@@ -28,6 +34,8 @@ export interface AgentConfig {
   settingsPath?: string;
   /** 浏览器配置 */
   browser: BrowserConfig;
+  /** 笨鸟系统配置 */
+  bnsy?: BnsyConfig;
   /** 日志级别 */
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   /** 心跳间隔（毫秒） */

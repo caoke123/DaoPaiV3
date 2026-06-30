@@ -10,6 +10,9 @@
     "debugPort": 9223,
     "headless": false
   },
+  "bnsy": {
+    "loginUrl": "https://bnsy.benniaosuyun.com/login"
+  },
   "logLevel": "info",
   "heartbeatIntervalMs": 15000,
   "taskPollIntervalMs": 5000

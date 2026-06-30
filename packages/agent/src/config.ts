@@ -6,7 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import type { AgentConfig, BrowserConfig } from './types';
+import type { AgentConfig, BrowserConfig, BnsyConfig } from './types';
 
 const CONFIG_FILE = path.resolve(__dirname, '..', 'agent.json');
 const CONFIG_EXAMPLE = path.resolve(__dirname, '..', 'agent.example.json');
@@ -55,6 +55,7 @@ export function loadConfig(): AgentConfig {
 
   // 4. 合并默认值
   const browser = loadBrowserConfig(raw.browser);
+  const bnsy = loadBnsyConfig(raw.bnsy);
 
   const config: AgentConfig = {
     cloudBaseUrl: raw.cloudBaseUrl as string,
@@ -63,6 +64,7 @@ export function loadConfig(): AgentConfig {
     siteId: (raw.siteId as string) || null,
     settingsPath: (raw.settingsPath as string) || undefined,
     browser,
+    bnsy,
     logLevel: validateLogLevel(raw.logLevel),
     heartbeatIntervalMs: validatePositiveInt(raw.heartbeatIntervalMs, DEFAULTS.heartbeatIntervalMs!, '心跳间隔'),
     taskPollIntervalMs: validatePositiveInt(raw.taskPollIntervalMs, DEFAULTS.taskPollIntervalMs!, '任务轮询间隔'),
@@ -123,4 +125,24 @@ function loadBrowserConfig(raw: unknown): BrowserConfig {
     debugPort: typeof b.debugPort === 'number' && b.debugPort > 0 ? b.debugPort : defaults.debugPort,
     headless: typeof b.headless === 'boolean' ? b.headless : defaults.headless,
   };
+}
+
+function loadBnsyConfig(raw: unknown): BnsyConfig | undefined {
+  if (!raw || typeof raw !== 'object') {
+    return undefined;
+  }
+
+  const b = raw as Record<string, unknown>;
+  const loginUrl = (b.loginUrl as string) || '';
+
+  if (!loginUrl) {
+    return undefined;
+  }
+
+  if (!loginUrl.startsWith('http://') && !loginUrl.startsWith('https://')) {
+    console.warn('警告：bnsy.loginUrl 格式不正确，必须是 http/https 地址');
+    return undefined;
+  }
+
+  return { loginUrl };
 }
