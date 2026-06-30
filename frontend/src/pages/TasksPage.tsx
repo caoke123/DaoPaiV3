@@ -91,12 +91,14 @@ const statusConfig: Record<BatchStatus, { icon: React.ReactNode; label: string; 
 
 const typeIconMap: Record<string, React.ReactNode> = {
   arrive: <PackageOpen className="w-3.5 h-3.5" />,
+  arrival: <PackageOpen className="w-3.5 h-3.5" />,
   dispatch: <Truck className="w-3.5 h-3.5" />,
   sign: <ClipboardCheck className="w-3.5 h-3.5" />,
 };
 
 const typeLabelMap: Record<string, string> = {
   arrive: '到件扫描',
+  arrival: '到件扫描',
   dispatch: '派件扫描',
   sign: '签收录入',
   integrated: '到派一体',
@@ -797,6 +799,7 @@ function TaskDetailDrawer({
 const TYPE_OPTIONS = [
   { value: '', label: '全部类型' },
   { value: 'arrive', label: '到件扫描' },
+  { value: 'arrival', label: '到件扫描' },
   { value: 'dispatch', label: '派件扫描' },
   { value: 'sign', label: '签收录入' },
   { value: 'integrated', label: '综合任务' },

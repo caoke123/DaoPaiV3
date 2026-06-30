@@ -1,8 +1,8 @@
 /**
  * DaoPai 本地执行端 — 启动入口
  *
- * 当前阶段：任务管道最小闭环（Phase 4-F），不接真实浏览器。
- * 后续 Phase 4-E+ 才接真实浏览器执行。
+ * Phase 5-B: 支持 agent_test + arrival DRY-RUN 任务。
+ * 不接真实浏览器，不启动 Playwright。
  */
 
 import { loadConfig } from './config';
@@ -18,6 +18,8 @@ import {
   completeTask,
   failTask,
 } from './httpClient';
+import { AgentSettingsLoader } from './AgentSettingsLoader';
+import { executeArrivalDryRun } from './executors/ArrivalExecutor';
 import type { AxiosInstance } from 'axios';
 import type { AgentConfig } from './types';
 
@@ -125,7 +127,11 @@ async function main(): Promise<void> {
   // 4. 创建 HTTP 客户端
   const client = createHttpClient(config);
 
-  // 5. 验证授权码
+  // 5. 初始化 settingsLoader
+  const settingsLoader = new AgentSettingsLoader(config.settingsPath);
+  console.log(`settings.json 路径：${settingsLoader['settingsPath']}`);
+
+  // 6. 验证授权码
   try {
     const me = await getAgentMe(client);
     console.log(`执行电脑：${me.name}`);
@@ -168,11 +174,30 @@ async function main(): Promise<void> {
           if (pullResp.hasTask && pullResp.task) {
             const task = pullResp.task;
 
-            // 只处理 agent_test 类型
+            // agent_test 任务
             if (task.type === 'agent_test') {
               runningTaskId = task.taskId;
               await executeAgentTestTask(client, task.taskId, task.payload);
               runningTaskId = null;
+            }
+            // arrival 到件扫描 DRY-RUN
+            else if (task.type === 'arrival') {
+              runningTaskId = task.taskId;
+              await executeArrivalDryRun(
+                {
+                  taskId: task.taskId,
+                  siteId: task.siteId,
+                  payload: task.payload as any,
+                },
+                client,
+                settingsLoader,
+              );
+              runningTaskId = null;
+            }
+            // 未知任务类型
+            else {
+              logger.warn(`未知任务类型：${task.type}，上报失败`);
+              await failTask(client, task.taskId, `未知任务类型：${task.type}`).catch(() => {});
             }
           }
         } catch (err) {

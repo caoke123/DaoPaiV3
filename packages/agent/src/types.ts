@@ -12,6 +12,8 @@ export interface AgentConfig {
   workstationName: string;
   /** 所属网点编号（可空） */
   siteId: string | null;
+  /** settings.json 路径（可空，默认 ../../data/settings.json） */
+  settingsPath?: string;
   /** 日志级别 */
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   /** 心跳间隔（毫秒） */

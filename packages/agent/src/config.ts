@@ -59,6 +59,7 @@ export function loadConfig(): AgentConfig {
     agentToken: raw.agentToken as string,
     workstationName: (raw.workstationName as string) || '未命名执行电脑',
     siteId: (raw.siteId as string) || null,
+    settingsPath: (raw.settingsPath as string) || undefined,
     logLevel: validateLogLevel(raw.logLevel),
     heartbeatIntervalMs: validatePositiveInt(raw.heartbeatIntervalMs, DEFAULTS.heartbeatIntervalMs!, '心跳间隔'),
     taskPollIntervalMs: validatePositiveInt(raw.taskPollIntervalMs, DEFAULTS.taskPollIntervalMs!, '任务轮询间隔'),

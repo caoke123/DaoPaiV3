@@ -1727,7 +1727,7 @@ export class PgDatabase {
          FROM tasks
          WHERE tenant_id = $1
            AND status = 'pending'
-           AND type = 'agent_test'
+           AND type IN ('agent_test', 'arrival')
          ORDER BY created_at ASC
          LIMIT 1
          FOR UPDATE SKIP LOCKED`,
