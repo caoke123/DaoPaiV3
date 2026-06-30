@@ -347,18 +347,18 @@ export default function SystemManagementPage() {
           </Card>
 
           {/* 工作站列表 */}
-          <Card title="工作站列表" icon={Monitor}>
+          <Card title="执行电脑列表" icon={Monitor}>
             {workstations.length > 0 ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-[12px]">
                   <thead>
                     <tr className="border-b border-border text-text-tertiary">
-                      <th className="text-left py-2 pr-3 font-medium">工作站名称</th>
+                      <th className="text-left py-2 pr-3 font-medium">执行电脑名称</th>
                       <th className="text-left py-2 pr-3 font-medium">所属网点</th>
                       <th className="text-left py-2 pr-3 font-medium">状态</th>
                       <th className="text-left py-2 pr-3 font-medium">在线状态</th>
-                      <th className="text-left py-2 pr-3 font-medium">浏览器状态</th>
-                      <th className="text-left py-2 pr-3 font-medium">最后心跳</th>
+                      <th className="text-left py-2 pr-3 font-medium">本地运行环境</th>
+                      <th className="text-left py-2 pr-3 font-medium">最后在线</th>
                       <th className="text-left py-2 font-medium">系统编号</th>
                     </tr>
                   </thead>
@@ -386,7 +386,7 @@ export default function SystemManagementPage() {
                 </table>
               </div>
             ) : (
-              <div className="text-[12px] text-text-tertiary">暂无工作站数据</div>
+              <div className="text-[12px] text-text-tertiary">暂无执行电脑数据</div>
             )}
           </Card>
         </div>

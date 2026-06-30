@@ -18,6 +18,7 @@ export interface AgentPrincipal {
   type: 'agent';
   tenantId: string;
   workstationId: string;
+  siteId?: string | null;
 }
 
 /** 匿名身份 — 未登录或未携带 Token 时的默认身份 */

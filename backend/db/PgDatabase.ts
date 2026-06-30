@@ -1590,4 +1590,101 @@ export class PgDatabase {
       updatedAt: r.updated_at,
     }));
   }
+
+  // ══════════════════════════════════════════════════════════
+  // 12. Agent Token 鉴权（Phase 4-E）
+  // ══════════════════════════════════════════════════════════
+
+  /**
+   * 通过执行电脑授权码查询工作站
+   *
+   * 因 agent_token_hash 是 hash 值，无法直接 WHERE 查询。
+   * 需遍历当前租户所有活跃工作站，逐个比对 hash。
+   *
+   * @param plainToken 明文 token（来自 HTTP 请求头）
+   * @returns 工作站信息或 null
+   */
+  async getWorkstationByTokenHash(plainToken: string): Promise<{
+    id: string;
+    tenantId: string;
+    siteId: string | null;
+    name: string;
+    status: string;
+    tokenRevokedAt: string | null;
+  } | null> {
+    const { verifyAgentToken } = await import('../auth/agentToken');
+
+    // 查询所有有 token hash 的工作站（不限 tenant，确保跨租户匹配）
+    const result = await this.pool.query(
+      `SELECT id, tenant_id, site_id, name, status, agent_token_hash, agent_token_revoked_at
+       FROM workstations
+       WHERE agent_token_hash IS NOT NULL
+         AND status != 'deleted'`
+    );
+
+    for (const row of result.rows) {
+      const r = row as any;
+      if (!r.agent_token_hash) continue;
+      if (verifyAgentToken(plainToken, r.agent_token_hash)) {
+        return {
+          id: r.id,
+          tenantId: r.tenant_id,
+          siteId: r.site_id,
+          name: r.name,
+          status: r.status,
+          tokenRevokedAt: r.agent_token_revoked_at,
+        };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * 更新执行电脑授权码的最后使用时间
+   *
+   * @param workstationId 工作站 ID
+   */
+  async touchAgentToken(workstationId: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE workstations
+       SET agent_token_last_used_at = NOW()
+       WHERE id = $1`,
+      [workstationId]
+    );
+  }
+
+  /**
+   * 更新工作站心跳状态
+   *
+   * @param params 心跳参数
+   */
+  async updateWorkstationHeartbeat(params: {
+    workstationId: string;
+    tenantId: string;
+    browserStatus: string;
+    agentVersion: string;
+    machineFingerprint: string;
+    lastIp: string;
+  }): Promise<void> {
+    await this.pool.query(
+      `UPDATE workstations
+       SET online_status       = 'online',
+           browser_status      = $3,
+           last_heartbeat_at   = NOW(),
+           agent_version       = $4,
+           machine_fingerprint = $5,
+           last_ip             = $6,
+           updated_at          = NOW()
+       WHERE id = $1 AND tenant_id = $2`,
+      [
+        params.workstationId,
+        params.tenantId,
+        params.browserStatus,
+        params.agentVersion,
+        params.machineFingerprint,
+        params.lastIp,
+      ]
+    );
+  }
 }

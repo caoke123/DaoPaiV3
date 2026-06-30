@@ -47,6 +47,7 @@ import { router } from './api/routes';
 import { requestContext } from './api/middleware/requestContext';
 import { authMiddleware, requireUserIfAuthRequired } from './auth';
 import { authRouter } from './auth/authRoutes';
+import { agentRouter } from './agent/agentRoutes';
 import { windowRuntimeRouter } from './api/windowRuntimeRoutes';
 import { pocRouter, PlaywrightRuntime } from './playwright-runtime';
 import { pocAdapterRouter, adapterTestRouter } from './window-adapter';
@@ -240,6 +241,9 @@ async function main(): Promise<void> {
 
   // 注册 API 路由
   app.use(authRouter);   // Phase 3-B: Auth 路由（必须在 authMiddleware 之后，且必须在 requireUserIfAuthRequired 之前）
+
+  // Phase 4-E: Agent 路由（使用执行电脑授权码鉴权，与用户 JWT 分离，必须在 requireUserIfAuthRequired 之前）
+  app.use('/agent', agentRouter);
 
   // Phase 3-C: 业务 API 认证保护（AUTH_REQUIRED=false 时兼容 anonymous）
   // 必须在 authRouter 之后、router 之前，确保：
