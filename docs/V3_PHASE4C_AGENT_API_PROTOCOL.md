@@ -107,7 +107,7 @@ Content-Type: application/json
     "workstationId": "ws-a1b2c3d4",
     "name": "天南大-前台01",
     "tenantId": "tenant-default",
-    "tenantName": "默认机构",
+    "tenantName": "默认快递公司",
     "siteId": "site-xxx",
     "siteName": "天南大网点",
     "status": "active",
@@ -610,7 +610,7 @@ running
 | `pending` | `assigned` | Agent pull |
 | `pending` | `cancelled` | 用户取消 |
 | `assigned` | `running` | Agent progress |
-| `assigned` | `timeout` | Cloud 超时回收 |
+| `assigned` | `pending` | Cloud 超时回收 |
 | `assigned` | `cancelled` | 用户取消 |
 | `running` | `done` | Agent complete |
 | `running` | `failed` | Agent fail |
@@ -698,7 +698,7 @@ running
 ```
 Agent 启动
   ↓
-1. POST /agent/me  → 验证授权码，确认执行电脑信息
+1. GET /agent/me  → 验证授权码，确认执行电脑信息
   ↓
 2. 循环开始：
   ├── POST /agent/heartbeat  → 上报状态，获取 hasTask
