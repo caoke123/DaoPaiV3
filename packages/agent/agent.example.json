@@ -4,6 +4,12 @@
   "workstationName": "天南大-前台电脑01",
   "siteId": null,
   "settingsPath": "../../data/settings.json",
+  "browser": {
+    "executablePath": "E:/网站开发/DaoPaiV3/Chrome/App/chrome.exe",
+    "userDataDir": "E:/网站开发/DaoPaiV3/runtime/chrome-profile",
+    "debugPort": 9223,
+    "headless": false
+  },
   "logLevel": "info",
   "heartbeatIntervalMs": 15000,
   "taskPollIntervalMs": 5000

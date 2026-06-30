@@ -6,10 +6,12 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test:chrome": "tsx src/testPortableChrome.ts"
   },
   "dependencies": {
-    "axios": "^1.6.0"
+    "axios": "^1.6.0",
+    "playwright-core": "^1.52.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

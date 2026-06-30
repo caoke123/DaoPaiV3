@@ -22,6 +22,8 @@ runtime/logs/
 runtime/screenshots/
 runtime/downloads/
 runtime/profiles/
+runtime/chrome-profile/
+runtime/chrome-profile-test/
 
 # 环境变量
 .env
