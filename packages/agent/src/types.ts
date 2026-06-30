@@ -2,6 +2,18 @@
  * DaoPai Agent 类型定义
  */
 
+/** 浏览器配置 */
+export interface BrowserConfig {
+  /** 便携版 Chrome 可执行文件路径（必填） */
+  executablePath: string;
+  /** 独立用户数据目录（必填） */
+  userDataDir: string;
+  /** CDP 调试端口，默认 9223 */
+  debugPort: number;
+  /** 无头模式（当前 Windows 便携版默认 false） */
+  headless: boolean;
+}
+
 /** Agent 配置 */
 export interface AgentConfig {
   /** Cloud 后端地址 */
@@ -14,6 +26,8 @@ export interface AgentConfig {
   siteId: string | null;
   /** settings.json 路径（可空，默认 ../../data/settings.json） */
   settingsPath?: string;
+  /** 浏览器配置 */
+  browser: BrowserConfig;
   /** 日志级别 */
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   /** 心跳间隔（毫秒） */

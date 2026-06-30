@@ -6,7 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import type { AgentConfig } from './types';
+import type { AgentConfig, BrowserConfig } from './types';
 
 const CONFIG_FILE = path.resolve(__dirname, '..', 'agent.json');
 const CONFIG_EXAMPLE = path.resolve(__dirname, '..', 'agent.example.json');
@@ -54,12 +54,15 @@ export function loadConfig(): AgentConfig {
   }
 
   // 4. 合并默认值
+  const browser = loadBrowserConfig(raw.browser);
+
   const config: AgentConfig = {
     cloudBaseUrl: raw.cloudBaseUrl as string,
     agentToken: raw.agentToken as string,
     workstationName: (raw.workstationName as string) || '未命名执行电脑',
     siteId: (raw.siteId as string) || null,
     settingsPath: (raw.settingsPath as string) || undefined,
+    browser,
     logLevel: validateLogLevel(raw.logLevel),
     heartbeatIntervalMs: validatePositiveInt(raw.heartbeatIntervalMs, DEFAULTS.heartbeatIntervalMs!, '心跳间隔'),
     taskPollIntervalMs: validatePositiveInt(raw.taskPollIntervalMs, DEFAULTS.taskPollIntervalMs!, '任务轮询间隔'),
@@ -82,4 +85,42 @@ function validatePositiveInt(value: unknown, defaultVal: number, name: string): 
   }
   console.warn(`警告：${name} 配置无效，使用默认值 ${defaultVal}ms`);
   return defaultVal;
+}
+
+function loadBrowserConfig(raw: unknown): BrowserConfig {
+  const defaults: BrowserConfig = {
+    executablePath: '',
+    userDataDir: '',
+    debugPort: 9223,
+    headless: false,
+  };
+
+  if (!raw || typeof raw !== 'object') {
+    console.error('错误：缺少 browser 配置，请检查 agent.json');
+    console.error('请确保 agent.json 中有 browser.executablePath 和 browser.userDataDir');
+    process.exit(1);
+  }
+
+  const b = raw as Record<string, unknown>;
+
+  const executablePath = (b.executablePath as string) || '';
+  if (!executablePath) {
+    console.error('错误：缺少 browser.executablePath，请检查 agent.json');
+    console.error('示例：E:/网站开发/DaoPaiV3/Chrome/App/chrome.exe');
+    process.exit(1);
+  }
+
+  const userDataDir = (b.userDataDir as string) || '';
+  if (!userDataDir) {
+    console.error('错误：缺少 browser.userDataDir，请检查 agent.json');
+    console.error('示例：E:/网站开发/DaoPaiV3/runtime/chrome-profile');
+    process.exit(1);
+  }
+
+  return {
+    executablePath,
+    userDataDir,
+    debugPort: typeof b.debugPort === 'number' && b.debugPort > 0 ? b.debugPort : defaults.debugPort,
+    headless: typeof b.headless === 'boolean' ? b.headless : defaults.headless,
+  };
 }
