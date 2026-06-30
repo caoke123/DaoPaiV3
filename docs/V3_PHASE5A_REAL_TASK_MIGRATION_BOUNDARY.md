@@ -72,7 +72,18 @@ Phase 5 目标：将真实业务任务（到件/派件/签收/到派一体）逐
 
 ## 4. Arrival Agent 化 payload 设计
 
-### 4.1 Cloud 创建 Arrival 任务时的 payload
+### 4.1 任务类型命名约定
+
+```text
+后端旧接口名继续保留 /api/operations/arrive，不在 Phase 5 修改。
+Agent 任务类型统一使用 arrival。
+前端显示仍为"到件扫描"。
+
+为避免与前端页面名称和后续任务类型混乱，Agent 任务 type 统一使用 arrival。
+旧 Cloud 执行接口 /api/operations/arrive 保留，用于兼容现有执行链路。
+```
+
+### 4.2 Cloud 创建 Arrival 任务时的 payload
 
 ```json
 {
@@ -90,7 +101,7 @@ Phase 5 目标：将真实业务任务（到件/派件/签收/到派一体）逐
 }
 ```
 
-### 4.2 字段说明
+### 4.3 字段说明
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -102,7 +113,7 @@ Phase 5 目标：将真实业务任务（到件/派件/签收/到派一体）逐
 | payload.options.batchSize | number | 否 | 每批处理条数，默认 200 |
 | payload.options.prevStation | string | 否 | 上一站名称，默认从 settings.json 读取 |
 
-### 4.3 关键约束
+### 4.4 关键约束
 
 ```text
 Phase 5-B 第一版：dryRun 必须为 true
@@ -131,26 +142,54 @@ Agent 端当前不读取 settings.json。
 AgentSettingsLoader 只读取 Arrival 所需字段：
   - sites[].id → 匹配 siteId
   - sites[].name → 网点名称
-  - sites[].windows[] → 窗口 browserId、员工账号密码
   - runtime.dryRunMode → 全局试运行开关
 
 不迁移 settings.json 到 Cloud
 不把员工账号密码上传 Cloud
-Agent 本机直接读取 data/settings.json 文件
+Agent 本机直接读取本地 settings.json 文件
 ```
 
-### 5.3 实现方式
+### 5.3 settingsPath 配置
+
+```text
+AgentSettingsLoader 必须支持 settingsPath 配置，避免写死相对路径。
+
+优先级（从高到低）：
+  1. 环境变量 DAOPAI_SETTINGS_PATH
+  2. agent.json 中 settingsPath 字段
+  3. 默认路径：项目根目录 data/settings.json
+
+agent.json 配置示例：
+  {
+    "settingsPath": "../../data/settings.json"
+  }
+
+环境变量覆盖：
+  DAOPAI_SETTINGS_PATH=E:/网站开发/DaoPaiV3/data/settings.json
+
+Agent 位于 packages/agent/ 子目录，默认相对路径需向上两级到项目根目录。
+```
+
+### 5.4 实现方式
 
 ```text
 packages/agent/src/AgentSettingsLoader.ts
-  - readSettingsFile(): 读取并解析 data/settings.json
-  - getSiteById(siteId): 根据 siteId 查找网点配置
-  - getWindowForSite(siteId): 获取网点下第一个可用窗口
+  - readSettingsFile(): 按 settingsPath 优先级读取并解析 settings.json
+  - getSiteById(siteId): 根据 siteId 查找网点配置，校验 siteId 是否存在
+  - getSiteName(siteId): 返回网点名称（用于日志显示）
   - getDryRunMode(): 读取全局试运行开关
   - 不复制 SettingsManager 全部代码，只实现最小所需
+
+Phase 5-B 范围限制：
+  - 不读取员工账号密码
+  - 不读取浏览器窗口绑定（browserId）
+  - 不启动浏览器
+  - 只验证 arrival payload → Agent dryRun → progress/logs/complete → 任务中心展示
+
+Phase 5-C 真实 Playwright 执行时再读取员工账号密码和窗口绑定。
 ```
 
-### 5.4 后续演进
+### 5.5 后续演进
 
 ```text
 Phase 6+：Agent 通过 Cloud API 获取配置（/agent/config）
@@ -222,6 +261,16 @@ Phase 5-B 策略：
   文件：backend/db/PgDatabase.ts → pullPendingTask
   改动：将 type = 'agent_test' 改为 type IN ('agent_test', 'arrival')
   同时：agentRoutes.ts 无需修改（pull 接口已返回 type 字段）
+
+  ⚠️ 风险提醒：编码前必须检查 tasks.type 是否存在 CHECK 约束。
+  如果当前 tasks.type 只允许 agent_test 或旧类型，不允许 arrival，
+  则需要新增幂等 migration 放开 arrival 类型。
+
+  如需 migration，要求：
+    - 只做最小幂等变更，不大改 tasks 表结构
+    - 目标是允许 arrival 类型进入 Agent 任务管道
+    - 不影响已有 agent_test
+    - 不影响旧 /api/operations/arrive 执行链路
 
 步骤 2：后端放开 arrival 类型任务创建（Agent 版）
   文件：backend/api/routes.ts
