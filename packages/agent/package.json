@@ -9,7 +9,8 @@
     "start": "node dist/index.js",
     "test:chrome": "tsx src/testPortableChrome.ts",
     "test:bnsy": "tsx src/testBnsyLoginPage.ts",
-    "test:bnsy:safety": "tsx src/testBnsyLoginSafety.ts"
+    "test:bnsy:safety": "tsx src/testBnsyLoginSafety.ts",
+    "test:bnsy:login": "tsx src/testBnsyLoginFlow.ts"
   },
   "dependencies": {
     "axios": "^1.6.0",

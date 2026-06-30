@@ -2,7 +2,7 @@
  * AgentSettingsLoader — 最小化 settings.json 读取器
  *
  * Phase 5-B: 只读取 siteName / dryRunMode，不读取员工账号密码和窗口绑定。
- * Phase 5-C 真实 Playwright 执行时再扩展读取范围。
+ * Phase 5-C-4: 新增 getLoginCredentialForSite()，读取当前网点一个员工账号密码。
  *
  * settingsPath 优先级（从高到低）：
  *   1. 环境变量 DAOPAI_SETTINGS_PATH
@@ -13,6 +13,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+interface WindowEntry {
+  windowName?: string;
+  employeeName?: string;
+  username?: string;
+  password?: string;
+  easybrBrowserId?: string;
+}
+
 interface SettingsData {
   initialized?: boolean;
   runtime?: {
@@ -21,8 +29,16 @@ interface SettingsData {
   sites?: Array<{
     id: string;
     name: string;
-    windows?: Array<unknown>;
+    windows?: WindowEntry[];
   }>;
+}
+
+export interface LoginCredential {
+  siteId: string;
+  siteName: string;
+  employeeName: string;
+  loginAccount: string;
+  loginPassword: string;
 }
 
 /**
@@ -99,5 +115,63 @@ export class AgentSettingsLoader {
     const data = await this.loadSettings();
     if (!data?.initialized) return true;
     return data.runtime?.dryRunMode !== false;
+  }
+
+  /**
+   * 获取当前网点的一个可用员工登录凭据
+   *
+   * Phase 5-C-4: 只读取当前 siteId 下第一个有密码的窗口。
+   * 密码在 settings.json 中为 base64 编码，读取时解码。
+   * 不读取 credentials.ts，不上传 Cloud，不打印密码。
+   *
+   * @param siteId 网点编号
+   * @returns 登录凭据，找不到时返回 null
+   */
+  async getLoginCredentialForSite(siteId: string): Promise<LoginCredential | null> {
+    const data = await this.loadSettings();
+    if (!data?.sites) {
+      console.error('[AgentSettingsLoader] 错误：settings.json 中未找到网点配置');
+      return null;
+    }
+
+    const site = data.sites.find(s => s.id === siteId);
+    if (!site) {
+      console.error(`[AgentSettingsLoader] 错误：未找到网点 ${siteId}，请检查 settings.json`);
+      return null;
+    }
+
+    if (!site.windows || site.windows.length === 0) {
+      console.error(`[AgentSettingsLoader] 错误：网点 ${site.name} 下没有配置窗口，请检查 settings.json`);
+      return null;
+    }
+
+    // 找到第一个有 username 和 password 的窗口
+    const win = site.windows.find(w => w.username && w.password);
+    if (!win) {
+      console.error(`[AgentSettingsLoader] 错误：网点 ${site.name} 下没有找到可用员工凭据`);
+      return null;
+    }
+
+    // 解码 base64 密码
+    let decodedPassword = '';
+    try {
+      decodedPassword = Buffer.from(win.password!, 'base64').toString('utf-8');
+    } catch {
+      console.error(`[AgentSettingsLoader] 错误：员工 ${win.employeeName || win.username} 密码解码失败`);
+      return null;
+    }
+
+    if (!decodedPassword) {
+      console.error(`[AgentSettingsLoader] 错误：员工 ${win.employeeName || win.username} 密码为空`);
+      return null;
+    }
+
+    return {
+      siteId: site.id,
+      siteName: site.name,
+      employeeName: win.employeeName || win.username || '未知员工',
+      loginAccount: win.username!,
+      loginPassword: decodedPassword,
+    };
   }
 }
