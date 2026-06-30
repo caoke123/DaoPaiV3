@@ -2,11 +2,16 @@
  * ArrivalPageDetector — 到件扫描页面检测
  *
  * Phase 5-D: 检测到件扫描页面核心 DOM 元素。
+ * Phase 5-E-1: 严格使用旧执行流程代码的选择器，禁止猜测。
+ *
+ * 选择器来源：
+ *   backend/operations/selectors/arrivalScanBatch.selectors.ts
  *
  * 只检测，不操作。不点击任何按钮，尤其是最终提交按钮。
  */
 
 import type { Page } from 'playwright-core';
+import { ARRIVAL_BATCH_SELECTORS, ARRIVAL_PAGE_ROUTE } from './arrivalSelectors';
 
 export interface ArrivalPageDetectResult {
   url: string;
@@ -22,9 +27,9 @@ export interface ArrivalPageDetectResult {
   warnings: string[];
 }
 
-// 到件扫描页面 URL 路径
+// 到件扫描页面 URL 路径（来源：PageStateManager.ts:18）
 const ARRIVAL_URL_PATTERNS = [
-  '/scanning/ArrivalscanBatch',
+  ARRIVAL_PAGE_ROUTE,
   '/scanning/arrivalscanBatch',
   'ArrivalscanBatch',
 ];
@@ -34,51 +39,25 @@ const ARRIVAL_PAGE_KEYWORDS = [
   '到件扫描', '到件', '批量到件', '运单号', '上一站',
 ];
 
-// 运单输入框选择器（从短到长，优先匹配简单的）
-const WAYBILL_INPUT_SELECTORS = [
-  'textarea[placeholder*="运单"]',
-  'textarea[placeholder*="输入"]',
-  '#app textarea',
-  'textarea',
-];
-
-// 上一站输入框选择器
-const PREV_STATION_SELECTORS = [
-  'input[placeholder*="上一站"]',
-  'input[placeholder*="站点"]',
-  '#app .el-input--suffix input',
-];
-
-// 查询按钮选择器（el-button--primary）
-const SEARCH_BUTTON_SELECTORS = [
-  'button.el-button--primary',
-  'button.el-button--primary.el-button--medium',
-];
-
-// 表格选择器
+// 结果表格选择器（来源：ArriveScanBatch.ts:211）
 const TABLE_SELECTORS = [
   '.el-table__body-wrapper .el-table__row',
   '.el-table__body-wrapper',
   '.el-table',
 ];
 
-// 最终提交按钮选择器（el-button--danger = 批量到件）
-const FINAL_SUBMIT_SELECTORS = [
-  'button.el-button--danger',
-  'button.el-button--danger.el-button--medium',
-];
-
-// 最终提交按钮关键词（用于文本匹配）
-const FINAL_SUBMIT_KEYWORDS = [
-  '批量到件', '确认到件', '提交到件', '提交', '到件', '批量', '确认',
-];
-
 /**
  * 检测到件扫描页面核心 DOM
+ *
+ * 选择器全部来源于 arrivalScanBatch.selectors.ts，不猜测：
+ *   - 运单输入框：waybillTextarea
+ *   - 上一站输入框：prevStationInput
+ *   - 查询按钮：queryBtn
+ *   - 最终提交按钮：submitBatchBtn
  */
 export async function detectArrivalPage(page: Page): Promise<ArrivalPageDetectResult> {
   const url = page.url();
-  const title = await page.title();
+  const title = await page.title().catch(() => '');
   const bodyText = await page.evaluate(() => {
     const body = document.body;
     return body ? body.innerText.substring(0, 1000) : '';
@@ -97,49 +76,40 @@ export async function detectArrivalPage(page: Page): Promise<ArrivalPageDetectRe
     warnings.push('当前页面不是到件扫描页面');
   }
 
-  // 2. 检测运单输入框
+  // 2. 检测运单输入框（来源：arrivalScanBatch.selectors.ts:42-43）
   let hasWaybillInput = false;
-  for (const sel of WAYBILL_INPUT_SELECTORS) {
-    try {
-      const count = await page.$$eval(sel, els => els.length);
-      if (count > 0) {
-        hasWaybillInput = true;
-        matchedSelectors.push(`运单输入框: ${sel}`);
-        break;
-      }
-    } catch {
-      // 选择器无效，跳过
+  try {
+    const count = await page.$$eval(ARRIVAL_BATCH_SELECTORS.waybillTextarea, els => els.length);
+    if (count > 0) {
+      hasWaybillInput = true;
+      matchedSelectors.push(`运单输入框: arrivalScanBatch.selectors.ts:42-43 waybillTextarea`);
     }
+  } catch {
+    // 选择器无效，跳过
   }
 
-  // 3. 检测上一站输入框
+  // 3. 检测上一站输入框（来源：arrivalScanBatch.selectors.ts:46-47）
   let hasPrevStationInput = false;
-  for (const sel of PREV_STATION_SELECTORS) {
-    try {
-      const count = await page.$$eval(sel, els => els.length);
-      if (count > 0) {
-        hasPrevStationInput = true;
-        matchedSelectors.push(`上一站: ${sel}`);
-        break;
-      }
-    } catch {
-      // 选择器无效，跳过
+  try {
+    const count = await page.$$eval(ARRIVAL_BATCH_SELECTORS.prevStationInput, els => els.length);
+    if (count > 0) {
+      hasPrevStationInput = true;
+      matchedSelectors.push(`上一站输入框: arrivalScanBatch.selectors.ts:46-47 prevStationInput`);
     }
+  } catch {
+    // 选择器无效，跳过
   }
 
-  // 4. 检测查询按钮
+  // 4. 检测查询按钮（来源：arrivalScanBatch.selectors.ts:53-54）
   let hasSearchButton = false;
-  for (const sel of SEARCH_BUTTON_SELECTORS) {
-    try {
-      const count = await page.$$eval(sel, els => els.length);
-      if (count > 0) {
-        hasSearchButton = true;
-        matchedSelectors.push(`查询按钮: ${sel}`);
-        break;
-      }
-    } catch {
-      // 选择器无效，跳过
+  try {
+    const count = await page.$$eval(ARRIVAL_BATCH_SELECTORS.queryBtn, els => els.length);
+    if (count > 0) {
+      hasSearchButton = true;
+      matchedSelectors.push(`查询按钮: arrivalScanBatch.selectors.ts:53-54 queryBtn`);
     }
+  } catch {
+    // 选择器无效，跳过
   }
 
   // 5. 检测结果表格
@@ -157,25 +127,23 @@ export async function detectArrivalPage(page: Page): Promise<ArrivalPageDetectRe
     }
   }
 
-  // 6. 检测最终提交按钮（检测但不点击）
+  // 6. 检测最终提交按钮（来源：arrivalScanBatch.selectors.ts:67-68）
+  //    只检测，不点击
   let hasFinalSubmitButton = false;
-  for (const sel of FINAL_SUBMIT_SELECTORS) {
-    try {
-      const count = await page.$$eval(sel, els => els.length);
-      if (count > 0) {
-        // 进一步检查按钮文本是否包含提交关键词
-        const btnText = await page.$$eval(sel, els =>
-          els.map(el => (el as HTMLElement).textContent || '').join('|')
-        );
-        const hasKeyword = FINAL_SUBMIT_KEYWORDS.some(kw => btnText.includes(kw));
-        if (hasKeyword) {
-          hasFinalSubmitButton = true;
-          finalSubmitSelectors.push(`提交按钮: ${sel} (文本: ${btnText.substring(0, 50)})`);
-        }
+  try {
+    const count = await page.$$eval(ARRIVAL_BATCH_SELECTORS.submitBatchBtn, els => els.length);
+    if (count > 0) {
+      // 进一步检查按钮文本是否包含"批量到件"
+      const btnText = await page.$$eval(ARRIVAL_BATCH_SELECTORS.submitBatchBtn, els =>
+        els.map(el => (el as HTMLElement).textContent || '').join('|')
+      );
+      if (btnText.includes('批量到件') || btnText.includes('到件')) {
+        hasFinalSubmitButton = true;
+        finalSubmitSelectors.push(`提交按钮: arrivalScanBatch.selectors.ts:67-68 submitBatchBtn (文本: ${btnText.substring(0, 50)})`);
       }
-    } catch {
-      // 选择器无效，跳过
     }
+  } catch {
+    // 选择器无效，跳过
   }
 
   return {

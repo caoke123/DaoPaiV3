@@ -13,6 +13,7 @@
 import type { Page } from 'playwright-core';
 import type { LoginCredential } from '../AgentSettingsLoader';
 import { detectBnsyLoginPage } from './BnsyLoginDetector';
+import { stableFillInput, stableFillPassword, verifyInputValue } from './StablePageActions';
 
 export interface BnsyLoginResult {
   success: boolean;
@@ -101,21 +102,39 @@ export async function loginToBnsy(
 
   // 3. 填写账号密码 + 点击登录
   try {
-    // 3a. 找账号输入框并填写
+    // 3a. 稳定填写账号
     const usernameInput = page.locator('input[placeholder*="账号"], input[type="text"]').first();
-    await usernameInput.click();
-    await usernameInput.fill('');
-    await usernameInput.fill(credential.loginAccount);
+    await stableFillInput(usernameInput, credential.loginAccount, { maxRetries: 3 });
+    console.log('  [Login] 账号输入校验通过');
 
-    // 3b. 找密码输入框并填写
+    // 3b. 稳定填写密码
     const passwordInput = page.locator('input[type="password"]').first();
-    await passwordInput.click();
-    await passwordInput.fill(credential.loginPassword);
+    await stableFillPassword(passwordInput, credential.loginPassword, { maxRetries: 3 });
+    console.log('  [Login] 密码输入校验通过');
 
-    // 3c. 等待一下确保 Vue 双向绑定完成
+    // 3c. 登录前最终校验：账号 + 密码必须都已填写成功
+    const accountOk = await verifyInputValue(usernameInput, credential.loginAccount, { timeoutMs: 2000 });
+    const passwordLengthOk = await passwordInput.inputValue().then(v => v.length === credential.loginPassword.length).catch(() => false);
+    if (!accountOk || !passwordLengthOk) {
+      return {
+        success: false,
+        beforeUrl: before.url,
+        afterUrl: page.url(),
+        title: await page.title().catch(() => ''),
+        employeeName: credential.employeeName,
+        accountMasked: maskAccount(credential.loginAccount),
+        isLoginPageBefore: true,
+        isLoginPageAfter: false,
+        isLoggedIn: false,
+        message: `登录前校验失败：账号校验=${accountOk}，密码长度校验=${passwordLengthOk}`,
+        warnings,
+      };
+    }
+
+    // 3d. 等待 Vue 双向绑定完成
     await page.waitForTimeout(500);
 
-    // 3d. 点击登录按钮
+    // 3e. 点击登录按钮
     const loginButton = page.locator('button:has-text("登录"), .el-button:has-text("登录")').first();
     await loginButton.click();
 

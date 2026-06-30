@@ -146,6 +146,14 @@ async function executeBrowserDryRun(
     console.log('[ArrivalExecutor] Dashboard P0 = READY');
     await uploadLogs(client, taskId, [{
       level: 'info',
+      message: '账号输入校验通过',
+      timestamp: new Date().toISOString(),
+    }, {
+      level: 'info',
+      message: '密码输入校验通过',
+      timestamp: new Date().toISOString(),
+    }, {
+      level: 'info',
       message: 'Dashboard P0 READY',
       timestamp: new Date().toISOString(),
     }]);
@@ -166,7 +174,15 @@ async function executeBrowserDryRun(
       options: { prevStation },
     });
 
-    // 7. 上报日志
+    // 7. 上报校验日志（Phase 5-E-1）
+    if (dryRunResult.validationLogs.length > 0) {
+      await uploadLogs(client, taskId, dryRunResult.validationLogs.map(msg => ({
+        level: 'info' as const,
+        message: msg,
+        timestamp: new Date().toISOString(),
+      })));
+    }
+
     await uploadLogs(client, taskId, [{
       level: 'info',
       message: `输入运单：${dryRunResult.inputCount} 条`,
