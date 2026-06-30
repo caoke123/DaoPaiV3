@@ -86,10 +86,10 @@ async function fetchWithAuth(url: string, options: RequestInit = {}): Promise<Re
 // MUST SYNC WITH src/types/api-contracts.ts
 
 /** 任务生命周期状态 */
-export type TaskStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
+export type TaskStatus = 'pending' | 'assigned' | 'running' | 'done' | 'failed' | 'cancelled';
 
 /** 任务类型 */
-export type TaskType = 'arrive' | 'dispatch' | 'sign' | 'integrated';
+export type TaskType = 'arrive' | 'arrival' | 'dispatch' | 'sign' | 'integrated';
 
 /** 窗口角色 */
 export type WindowRole = 'admin' | 'staff';
@@ -555,6 +555,20 @@ export async function getTaskLogsById(
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   const resp = await fetchWithAuth(`${BASE}/tasks/${encodeURIComponent(taskId)}/logs?${params}`);
   if (!resp.ok) throw new Error(`查询任务日志失败: HTTP ${resp.status}`);
+  return resp.json();
+}
+
+/** 查询任务最新状态（从 PG，供前端实时轮询） */
+export async function getTaskStatus(taskId: string): Promise<{
+  taskId: string;
+  status: TaskStatus;
+  type: string;
+  totalCount: number;
+  doneCount: number;
+  failCount: number;
+}> {
+  const resp = await fetchWithAuth(`${BASE}/tasks/${encodeURIComponent(taskId)}/status`);
+  if (!resp.ok) throw new Error(`查询任务状态失败: HTTP ${resp.status}`);
   return resp.json();
 }
 

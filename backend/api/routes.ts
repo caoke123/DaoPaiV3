@@ -1669,6 +1669,29 @@ router.get('/api/operations/:taskId/events', (req: Request, res: Response) => {
 
 // ── 任务详情 API（基于 PgDatabase）─────────────────────
 
+/** GET /api/tasks/:id/status — 查询任务最新状态（从 PG，供前端实时轮询） */
+router.get('/api/tasks/:id/status', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const pgDb = PgDatabase.getInstance();
+    const task = await pgDb.getTaskById(getTenantId(req), id);
+    if (!task) {
+      return res.status(404).json({ error: '任务不存在' });
+    }
+    res.json({
+      taskId: task.id,
+      status: task.status,
+      type: task.type,
+      totalCount: task.totalCount,
+      doneCount: task.doneCount,
+      failCount: task.failCount,
+    });
+  } catch (e) {
+    console.error('[GET /api/tasks/:id/status] 失败:', (e as Error).message);
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
+
 /** GET /api/tasks/:id/logs — 查询任务执行日志（从 PG task_logs 表） */
 router.get('/api/tasks/:id/logs', async (req: Request, res: Response) => {
   try {

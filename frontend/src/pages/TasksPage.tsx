@@ -16,6 +16,8 @@ import {
   getTaskWaybills,
   getTaskStaffSummary,
   getTaskLogsById,
+  getTaskProgress,
+  getTaskStatus,
   getTaskDeleteStats,
   batchDeleteTasks,
   createArrivalDryRunTask,
@@ -116,6 +118,7 @@ function apiStatusToBatchStatus(s: TaskItem['status']): BatchStatus {
     case 'done': return 'completed';
     case 'running': return 'executing';
     case 'pending': return 'not_started';
+    case 'assigned': return 'executing';
     case 'failed': return 'error';
     case 'cancelled': return 'error';
   }
@@ -189,7 +192,13 @@ function TaskDetailDrawer({
   task: TaskItem;
   onClose: () => void;
 }) {
-  const [activeTab, setActiveTab] = useState<DrawerTab>('info');
+  const [activeTab, setActiveTab] = useState<DrawerTab>(
+    task.status === 'pending' || task.status === 'running' ? 'logs' : 'info'
+  );
+
+  // ── 实时任务状态（从 PG 轮询，避免父组件 selectedTask 冻结快照导致轮询不启动）──
+  const [liveStatus, setLiveStatus] = useState<TaskItem['status']>(task.status);
+  const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Tab1 任务信息数据 ──
   const [summary, setSummary] = useState<TaskSummaryResponse | null>(null);
@@ -310,17 +319,47 @@ function TaskDetailDrawer({
     if (activeTab === 'logs') loadLogs();
   }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── 日志轮询 ──
+  // ── 实时状态轮询：从 PG 获取最新 status，驱动日志轮询 ──
+  // 任务状态可能为 pending / assigned / running / done / failed / cancelled
+  // pending/assigned/running 阶段都需要持续轮询日志
   useEffect(() => {
-    if (activeTab === 'logs' && task.status === 'running') {
-      pollTimerRef.current = setInterval(loadLogs, 3000);
+    // 初始即认为可能是执行中，立即查一次状态
+    let cancelled = false;
+    const pollStatus = async () => {
+      try {
+        const s = await getTaskStatus(task.id);
+        if (cancelled) return;
+        setLiveStatus(s.status as TaskItem['status']);
+      } catch {
+        // 忽略，下次再试
+      }
+    };
+    pollStatus();
+    statusPollRef.current = setInterval(pollStatus, 2000);
+    return () => {
+      cancelled = true;
+      if (statusPollRef.current) { clearInterval(statusPollRef.current); statusPollRef.current = null; }
+    };
+  }, [task.id]);
+
+  // ── 日志轮询：activeTab=logs 且任务未结束时持续轮询 ──
+  useEffect(() => {
+    const isRunning = liveStatus === 'pending' || liveStatus === 'assigned' || liveStatus === 'running';
+    if (activeTab === 'logs' && isRunning) {
+      // 立即拉一次，再启动定时轮询
+      loadLogs();
+      pollTimerRef.current = setInterval(loadLogs, 1500);
       return () => {
         if (pollTimerRef.current) { clearInterval(pollTimerRef.current); pollTimerRef.current = null; }
       };
     } else {
       if (pollTimerRef.current) { clearInterval(pollTimerRef.current); pollTimerRef.current = null; }
+      // 任务结束时（done/failed/cancelled）再拉一次最终日志，确保完整
+      if (activeTab === 'logs' && (liveStatus === 'done' || liveStatus === 'failed' || liveStatus === 'cancelled')) {
+        loadLogs();
+      }
     }
-  }, [activeTab, task.status, loadLogs]);
+  }, [activeTab, liveStatus, loadLogs]);
 
   // ── 日志自动滚动 ──
   useEffect(() => {
@@ -717,8 +756,13 @@ function TaskDetailDrawer({
                   <div className="w-14 h-14 rounded-2xl bg-[#f5f7fa] flex items-center justify-center mb-3">
                     <FileText className="w-6 h-6 text-text-tertiary/60" />
                   </div>
-                  <div className="text-[14px] font-medium text-text-secondary">暂无执行日志</div>
-                  <div className="text-[12px] text-text-tertiary mt-1">该任务尚未产生执行记录</div>
+                  <div className="text-[14px] font-medium text-text-secondary">等待执行日志...</div>
+                  <div className="text-[12px] text-text-tertiary mt-1">
+                    {liveStatus === 'pending' ? '任务排队中，等待 Agent 拉取' :
+                     liveStatus === 'assigned' ? '任务已分配，等待执行日志' :
+                     liveStatus === 'running' ? '任务执行中，日志即将到达' :
+                     '该任务尚未产生执行记录'}
+                  </div>
                 </div>
               ) : (
                 <div className="rounded-xl border border-[#e5e7eb] bg-white shadow-sm overflow-hidden">
@@ -727,7 +771,7 @@ function TaskDetailDrawer({
                       <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
                       <span className="text-[12px] font-medium text-text-primary">执行日志</span>
                     </div>
-                    {task.status === 'running' && (
+                    {(liveStatus === 'pending' || liveStatus === 'assigned' || liveStatus === 'running') && (
                       <span className="px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[11px] font-medium">实时更新</span>
                     )}
                     <button
@@ -777,7 +821,7 @@ function TaskDetailDrawer({
                   </div>
                   <div className="px-4 py-2 border-t border-[#f0f0f0] bg-[#fafafa] text-[11px] text-text-tertiary flex items-center justify-between">
                     <span>共 {logsTotal} 条记录</span>
-                    {task.status === 'running' && (
+                    {(liveStatus === 'pending' || liveStatus === 'assigned' || liveStatus === 'running') && (
                       <span className="flex items-center gap-1 text-primary">
                         <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
                         实时同步中
@@ -1126,6 +1170,23 @@ export default function TasksPage() {
 
   const totalPagesValid = totalPages > 0 ? totalPages : 1;
 
+  // ── 创建任务成功后立即打开详情抽屉，让用户看到实时日志 ──
+  const openTaskDrawer = (taskId: string, type: TaskItem['type'], siteName: string, waybillCount: number) => {
+    const tempTask: TaskItem = {
+      id: taskId,
+      type,
+      site: 'site-1782121346155',
+      siteName,
+      status: 'pending',
+      totalCount: waybillCount,
+      doneCount: 0,
+      failCount: 0,
+      createdAt: new Date().toISOString(),
+      finishedAt: null,
+    };
+    setSelectedTask(tempTask);
+  };
+
   // ── Phase 5-E: 创建到件浏览器 DRY-RUN 任务 ──
   const handleCreateDryRun = async () => {
     const waybills = dryRunWaybills
@@ -1147,6 +1208,7 @@ export default function TasksPage() {
       });
       setToastMsg(`到件 DRY-RUN 任务已创建：${resp.taskId.slice(0, 8)}...`);
       setShowDryRunModal(false);
+      openTaskDrawer(resp.taskId, 'arrival', '天南大', waybills.length);
       setTimeout(() => loadTasks(), 500);
     } catch (e) {
       setToastMsg(`创建失败：${(e as Error).message}`);
@@ -1177,6 +1239,7 @@ export default function TasksPage() {
       });
       setToastMsg(`派件 DRY-RUN 任务已创建：${resp.taskId.slice(0, 8)}...`);
       setShowDispatchModal(false);
+      openTaskDrawer(resp.taskId, 'dispatch', '天南大', waybills.length);
       setTimeout(() => loadTasks(), 500);
     } catch (e) {
       setToastMsg(`创建失败：${(e as Error).message}`);
@@ -1207,6 +1270,7 @@ export default function TasksPage() {
       });
       setToastMsg(`到派一体 DRY-RUN 任务已创建：${resp.taskId.slice(0, 8)}...`);
       setShowIntegratedModal(false);
+      openTaskDrawer(resp.taskId, 'integrated', '天南大', waybills.length);
       setTimeout(() => loadTasks(), 500);
     } catch (e) {
       setToastMsg(`创建失败：${(e as Error).message}`);
@@ -1237,6 +1301,7 @@ export default function TasksPage() {
       });
       setToastMsg(`签收 DRY-RUN 任务已创建：${resp.taskId.slice(0, 8)}...`);
       setShowSignModal(false);
+      openTaskDrawer(resp.taskId, 'sign', '天南大', waybills.length);
       setTimeout(() => loadTasks(), 500);
     } catch (e) {
       setToastMsg(`创建失败：${(e as Error).message}`);
