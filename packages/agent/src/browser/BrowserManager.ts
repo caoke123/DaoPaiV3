@@ -171,6 +171,25 @@ export class BrowserManager {
   }
 
   // ══════════════════════════════════════════════════════════
+  // 3c. getCurrentPageInfo() — 获取当前页面信息
+  // ══════════════════════════════════════════════════════════
+
+  async getCurrentPageInfo(): Promise<{ url: string; title: string; bodyText: string }> {
+    if (!this.page) {
+      throw new Error('页面未初始化，请先调用 openPage() 或 getOrCreatePage()');
+    }
+
+    const url = this.page.url();
+    const title = await this.page.title();
+    const bodyText = await this.page.evaluate(() => {
+      const body = document.body;
+      return body ? body.innerText.substring(0, 500) : '';
+    });
+
+    return { url, title, bodyText };
+  }
+
+  // ══════════════════════════════════════════════════════════
   // 4. healthCheck() — 基础健康检查
   // ══════════════════════════════════════════════════════════
 
