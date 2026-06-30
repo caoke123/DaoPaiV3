@@ -111,8 +111,13 @@ export async function uploadLogs(
 export async function completeTask(
   client: AxiosInstance,
   taskId: string,
+  summary?: Record<string, unknown>,
+  results?: Array<Record<string, unknown>>,
 ): Promise<void> {
-  await client.post(`/agent/tasks/${taskId}/complete`, {});
+  const body: Record<string, unknown> = {};
+  if (summary) body.summary = summary;
+  if (results) body.results = results;
+  await client.post(`/agent/tasks/${taskId}/complete`, body);
 }
 
 /**

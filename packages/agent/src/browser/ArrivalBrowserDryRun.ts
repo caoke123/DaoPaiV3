@@ -196,7 +196,12 @@ export async function runArrivalBrowserDryRun(
   }
 
   result.pageUrl = page.url();
-  result.title = await page.title();
+  try {
+    result.title = await page.title();
+  } catch {
+    result.title = '(无法获取标题)';
+    console.log(`  [DRY-RUN] page.title() 失败，可能是页面正在重载，继续执行`);
+  }
   console.log(`  [DRY-RUN] 页面已打开: ${result.pageUrl}`);
   console.log(`  [DRY-RUN] 页面标题: ${result.title}`);
 

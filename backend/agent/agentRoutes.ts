@@ -242,6 +242,7 @@ agentRouter.post('/tasks/:id/complete', async (req: Request, res: Response) => {
   try {
     const { tenantId, workstationId } = getAgentPrincipal(req);
     const taskId = req.params.id;
+    const { summary, results } = req.body || {};
 
     const pg = PgDatabase.getInstance();
     const updated = await pg.completeAgentTask(taskId, tenantId, workstationId);
@@ -252,6 +253,39 @@ agentRouter.post('/tasks/:id/complete', async (req: Request, res: Response) => {
         message: '任务已完成或已失败，不能重复完成',
         timestamp: new Date().toISOString(),
       });
+    }
+
+    // 如果 Agent 上报了 summary/results，写入 task_logs 作为完成记录
+    if (summary || results) {
+      try {
+        const logs: Array<{ id: string; taskId: string; timestamp: number; level: 'info' | 'warning' | 'error'; message: string; source: string }> = [];
+        const now = Date.now();
+        if (summary) {
+          logs.push({
+            id: `summary-${now}`,
+            taskId,
+            timestamp: now,
+            level: 'info',
+            message: `任务完成摘要：${JSON.stringify(summary)}`,
+            source: 'agent',
+          });
+        }
+        if (results && Array.isArray(results)) {
+          logs.push({
+            id: `results-${now}`,
+            taskId,
+            timestamp: now,
+            level: 'info',
+            message: `任务完成结果：${JSON.stringify(results)}`,
+            source: 'agent',
+          });
+        }
+        if (logs.length > 0) {
+          await pg.insertTaskLogs(logs, tenantId);
+        }
+      } catch (logErr) {
+        console.error('[POST /agent/tasks/:id/complete] 写入 summary/results 日志失败:', (logErr as Error).message);
+      }
     }
 
     res.json({

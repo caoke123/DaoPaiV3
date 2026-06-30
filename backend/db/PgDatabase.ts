@@ -1867,7 +1867,7 @@ export class PgDatabase {
       `SELECT 1 FROM tasks
        WHERE tenant_id = $1
          AND status = 'pending'
-         AND type = 'agent_test'
+         AND type IN ('agent_test', 'arrival')
        LIMIT 1`,
       [tenantId]
     );

@@ -2065,11 +2065,11 @@ router.post('/api/cloud/agent-test-task', async (req: Request, res: Response) =>
   }
 });
 
-/** POST /api/cloud/agent-arrival-task — 创建 arrival Agent DRY-RUN 任务（Phase 5-B） */
+/** POST /api/cloud/agent-arrival-task — 创建 arrival Agent DRY-RUN 任务（Phase 5-B / 5-E） */
 router.post('/api/cloud/agent-arrival-task', async (req: Request, res: Response) => {
   try {
     const tenantId = getTenantId(req);
-    const { siteId, siteName, waybills, options } = req.body || {};
+    const { siteId, siteName, waybills, options, browserDryRun } = req.body || {};
 
     if (!siteId) {
       return res.status(400).json({ error: '缺少 siteId 参数' });
@@ -2089,11 +2089,12 @@ router.post('/api/cloud/agent-arrival-task', async (req: Request, res: Response)
         options: options || {},
         siteName: siteName || siteId,
         dryRun: true,
+        browserDryRun: browserDryRun === true,
       },
       tenantId,
     });
 
-    res.json({ ok: true, taskId, message: 'Arrival DRY-RUN 任务已创建', waybillCount: waybills.length });
+    res.json({ ok: true, taskId, message: 'Arrival DRY-RUN 任务已创建', waybillCount: waybills.length, browserDryRun: browserDryRun === true });
   } catch (e) {
     console.error('[POST /api/cloud/agent-arrival-task] 失败:', (e as Error).message);
     res.status(500).json({ error: (e as Error).message });

@@ -191,6 +191,7 @@ async function main(): Promise<void> {
                 },
                 client,
                 settingsLoader,
+                config,
               );
               runningTaskId = null;
             }
