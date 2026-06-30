@@ -1,0 +1,9 @@
+{
+  "cloudBaseUrl": "http://localhost:3300",
+  "agentToken": "请填入执行电脑授权码",
+  "workstationName": "天南大-前台电脑01",
+  "siteId": null,
+  "logLevel": "info",
+  "heartbeatIntervalMs": 15000,
+  "taskPollIntervalMs": 5000
+}
