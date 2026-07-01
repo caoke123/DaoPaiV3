@@ -3,6 +3,7 @@
  *
  * Phase 5-B: 模拟 dryRun，不启动浏览器
  * Phase 5-E: 接入浏览器 DRY-RUN（payload.browserDryRun=true 时）
+ * Phase 5-G-3: 使用 AgentLogger 缓冲日志，定时/定量 flush，减少日志真空期
  *
  * 硬性约束：
  *   - dryRun 必须为 true，否则拒绝执行
@@ -14,10 +15,10 @@
 import type { AxiosInstance } from 'axios';
 import {
   reportProgress,
-  uploadLogs,
   completeTask,
   failTask,
 } from '../httpClient';
+import { createAgentLogger } from '../logger/AgentLogger';
 import type { AgentSettingsLoader } from '../AgentSettingsLoader';
 import { BrowserManager } from '../browser/BrowserManager';
 import { ensureBnsyLoggedIn } from '../browser/BnsySessionManager';
@@ -94,33 +95,35 @@ async function executeBrowserDryRun(
     headless: false,
   };
 
+  const logger = createAgentLogger(client, taskId);
   let manager: BrowserManager | null = null;
 
   try {
     // 1. 上报开始日志 + progress 5%
     console.log(`[ArrivalExecutor] 开始到件扫描浏览器 DRY-RUN，任务: ${taskId}`);
-    await uploadLogs(client, taskId, [{
-      level: 'info',
-      message: `开始到件扫描浏览器 DRY-RUN，网点：${siteName}，运单数：${waybills.length}`,
-      timestamp: new Date().toISOString(),
-    }]);
+    logger.info(`开始到件扫描浏览器 DRY-RUN，网点：${siteName}，运单数：${waybills.length}`);
+    logger.info(`参数校验完成，上一站：${prevStation}`);
     await reportProgress(client, taskId, 'running', 5);
 
     // 2. 启动浏览器
     console.log('[ArrivalExecutor] 启动项目内便携版 Chrome...');
-    await uploadLogs(client, taskId, [{
-      level: 'info',
-      message: '启动项目内便携版 Chrome',
-      timestamp: new Date().toISOString(),
-    }]);
+    logger.info('正在启动项目内便携版 Chrome...');
+    await logger.flush();
 
     manager = new BrowserManager(browserConfig);
     await manager.start();
+    logger.success('Chrome 启动成功');
+    logger.info('正在连接 Chrome DevTools...');
     await manager.connect();
+    logger.success('Chrome DevTools 连接成功');
 
-    // 3. 打开登录页 + 登录
+    // 3. 打开登录页
     console.log('[ArrivalExecutor] 打开登录页...');
+    logger.info(`正在打开登录页：${loginUrl}`);
+    await logger.flush();
+
     const page = await manager.openPage(loginUrl);
+    logger.info('等待页面加载（5秒）...');
     await page.waitForTimeout(5000);
 
     // 4. 确保登录
@@ -129,43 +132,24 @@ async function executeBrowserDryRun(
       throw new Error('无法读取员工凭据');
     }
 
-    console.log('[ArrivalExecutor] 登录状态检查...');
+    logger.info('正在检查登录状态...');
     const loginResult = await ensureBnsyLoggedIn(page, credential);
-
-    await uploadLogs(client, taskId, [{
-      level: 'info',
-      message: `登录状态检查完成：${loginResult.message}`,
-      timestamp: new Date().toISOString(),
-    }]);
+    logger.info(`登录状态检查完成：${loginResult.message}`);
 
     // 5. Dashboard P0 必须 READY
     if (!loginResult.success || loginResult.dashboard.status !== 'READY') {
       throw new Error(`Dashboard P0 不是 READY（状态: ${loginResult.dashboard.status}）`);
     }
 
-    console.log('[ArrivalExecutor] Dashboard P0 = READY');
-    await uploadLogs(client, taskId, [{
-      level: 'info',
-      message: '账号输入校验通过',
-      timestamp: new Date().toISOString(),
-    }, {
-      level: 'info',
-      message: '密码输入校验通过',
-      timestamp: new Date().toISOString(),
-    }, {
-      level: 'info',
-      message: 'Dashboard P0 READY',
-      timestamp: new Date().toISOString(),
-    }]);
+    logger.info('账号输入校验通过');
+    logger.info('密码输入校验通过');
+    logger.success('Dashboard P0 READY');
     await reportProgress(client, taskId, 'running', 30);
 
     // 6. 执行到件页面 DRY-RUN
     console.log('[ArrivalExecutor] 进入到件扫描页面...');
-    await uploadLogs(client, taskId, [{
-      level: 'info',
-      message: '进入到件扫描页面',
-      timestamp: new Date().toISOString(),
-    }]);
+    logger.info('正在进入到件扫描页面...');
+    await logger.flush();
 
     const dryRunResult = await runArrivalBrowserDryRun(page, {
       siteId,
@@ -174,34 +158,21 @@ async function executeBrowserDryRun(
       options: { prevStation },
     });
 
-    // 7. 上报校验日志（Phase 5-E-1）
+    // 7. 上报校验日志
     if (dryRunResult.validationLogs.length > 0) {
-      await uploadLogs(client, taskId, dryRunResult.validationLogs.map(msg => ({
-        level: 'info' as const,
-        message: msg,
-        timestamp: new Date().toISOString(),
-      })));
+      logger.info(`校验结果：共 ${dryRunResult.validationLogs.length} 条校验日志`);
+      for (const msg of dryRunResult.validationLogs) {
+        logger.info(msg);
+      }
     }
 
-    await uploadLogs(client, taskId, [{
-      level: 'info',
-      message: `输入运单：${dryRunResult.inputCount} 条`,
-      timestamp: new Date().toISOString(),
-    }]);
+    logger.info(`输入运单：${dryRunResult.inputCount} 条`);
 
     if (dryRunResult.queried) {
-      await uploadLogs(client, taskId, [{
-        level: 'info',
-        message: '点击查询按钮',
-        timestamp: new Date().toISOString(),
-      }]);
+      logger.info('已点击查询按钮');
     }
 
-    await uploadLogs(client, taskId, [{
-      level: 'info',
-      message: '已阻止最终提交（未点击批量到件/确认到件/提交按钮）',
-      timestamp: new Date().toISOString(),
-    }]);
+    logger.info('已阻止最终提交（未点击批量到件/确认到件/提交按钮）');
 
     // 8. 检查结果
     if (!dryRunResult.success) {
@@ -211,14 +182,22 @@ async function executeBrowserDryRun(
     // 9. 上报 progress 90%
     await reportProgress(client, taskId, 'running', 90);
     console.log('[ArrivalExecutor] 页面 DRY-RUN 完成');
+    logger.success('到件扫描浏览器 DRY-RUN 完成，未点击最终提交');
 
-    await uploadLogs(client, taskId, [{
-      level: 'success',
-      message: '到件扫描浏览器 DRY-RUN 完成，未点击最终提交',
-      timestamp: new Date().toISOString(),
-    }]);
+    // 先 flush 日志，再关闭浏览器
+    await logger.flush();
 
-    // 10. complete
+    // 10. 关闭浏览器
+    if (manager) {
+      console.log('[ArrivalExecutor] 关闭 V3 Chrome...');
+      logger.info('正在关闭 V3 Chrome...');
+      const closeResult = await manager.close();
+      manager = null;
+      logger.info(`V3 Chrome 已关闭：${closeResult.message}`);
+    }
+
+    // 11. complete — flush 所有日志后再完成
+    await logger.flush();
     const summary = {
       mode: 'browserDryRun',
       total: dryRunResult.inputCount,
@@ -241,13 +220,24 @@ async function executeBrowserDryRun(
     const msg = (err as Error).message;
     console.error(`[ArrivalExecutor] 任务 ${taskId} 执行失败：${msg}`);
 
-    await uploadLogs(client, taskId, [{
-      level: 'error',
-      message: `任务执行失败：${msg}`,
-      timestamp: new Date().toISOString(),
-    }]).catch(() => {});
+    logger.error(`任务执行失败：${msg}`);
+    await logger.flush();
+
+    // 关闭浏览器（如果还开着）
+    if (manager) {
+      try {
+        logger.info('正在关闭 V3 Chrome...');
+        await logger.flush();
+        await manager.close();
+        manager = null;
+        logger.info('V3 Chrome 已关闭');
+      } catch (closeErr) {
+        console.error(`[ArrivalExecutor] Chrome 关闭失败：${(closeErr as Error).message}`);
+      }
+    }
 
     try {
+      await logger.close();
       await failTask(client, taskId, msg);
     } catch {
       // 忽略 fail 失败
@@ -255,20 +245,7 @@ async function executeBrowserDryRun(
     throw err;
 
   } finally {
-    // 11. 关闭浏览器，确认无残留
-    if (manager) {
-      console.log('[ArrivalExecutor] 关闭 V3 Chrome...');
-      try {
-        const closeResult = await manager.close();
-        await uploadLogs(client, taskId, [{
-          level: 'info',
-          message: `V3 Chrome 已关闭：${closeResult.message}`,
-          timestamp: new Date().toISOString(),
-        }]).catch(() => {});
-      } catch (err) {
-        console.error(`[ArrivalExecutor] Chrome 关闭失败：${(err as Error).message}`);
-      }
-    }
+    await logger.close();
   }
 }
 
@@ -291,13 +268,12 @@ async function executeSimulatedDryRun(
   console.log(`[ArrivalExecutor] 网点：${siteName}，运单数：${totalWaybills}`);
   console.log(`[ArrivalExecutor] 模式：模拟 DRY-RUN（不启动浏览器）`);
 
-  try {
-    await uploadLogs(client, taskId, [{
-      level: 'info',
-      message: `开始到件扫描 DRY-RUN，网点：${siteName}，运单数：${totalWaybills}`,
-      timestamp: new Date().toISOString(),
-    }]);
+  const logger = createAgentLogger(client, taskId);
 
+  try {
+    logger.info(`开始到件扫描 DRY-RUN，网点：${siteName}，运单数：${totalWaybills}`);
+    logger.info(`模式：模拟 DRY-RUN（不启动浏览器）`);
+    logger.info(`参数：batchSize=${batchSize}`);
     await reportProgress(client, taskId, 'running', 10);
     console.log(`进度：10%`);
 
@@ -309,16 +285,14 @@ async function executeSimulatedDryRun(
       const end = Math.min(start + batchSize, totalWaybills);
       const batchWaybills = waybills.slice(start, end);
 
+      logger.info(`开始处理第 ${batch + 1}/${totalBatches} 批（${start + 1}-${end}）`);
+
       for (const waybillNo of batchWaybills) {
         processed++;
         console.log(`模拟处理运单：${waybillNo}`);
 
-        if (processed % 10 === 0 || processed === totalWaybills) {
-          await uploadLogs(client, taskId, [{
-            level: 'info',
-            message: `DRY-RUN 模拟处理运单 ${processed}/${totalWaybills}`,
-            timestamp: new Date().toISOString(),
-          }]);
+        if (processed % 5 === 0 || processed === totalWaybills) {
+          logger.info(`DRY-RUN 模拟处理运单 ${processed}/${totalWaybills}`);
         }
 
         await new Promise(resolve => setTimeout(resolve, 50));
@@ -326,17 +300,15 @@ async function executeSimulatedDryRun(
 
       const progress = Math.floor(10 + ((batch + 1) / totalBatches) * 85);
       await reportProgress(client, taskId, 'running', progress);
+      logger.info(`第 ${batch + 1}/${totalBatches} 批处理完成，进度 ${progress}%`);
       console.log(`进度：${progress}% (第 ${batch + 1}/${totalBatches} 批)`);
     }
 
     await reportProgress(client, taskId, 'running', 100);
     console.log(`进度：100%`);
 
-    await uploadLogs(client, taskId, [{
-      level: 'success',
-      message: `到件扫描 DRY-RUN 完成，共处理 ${totalWaybills} 条运单`,
-      timestamp: new Date().toISOString(),
-    }]);
+    logger.success(`到件扫描 DRY-RUN 完成，共处理 ${totalWaybills} 条运单`);
+    await logger.flush();
 
     await completeTask(client, taskId);
     console.log('到件扫描 DRY-RUN 完成，已回传 Cloud');
@@ -344,11 +316,17 @@ async function executeSimulatedDryRun(
     const msg = (err as Error).message;
     console.error(`到件扫描任务 ${taskId} 执行失败：${msg}`);
 
+    logger.error(`任务执行失败：${msg}`);
+    await logger.flush();
+
     try {
+      await logger.close();
       await failTask(client, taskId, msg);
     } catch {
       // 忽略 fail 失败
     }
     throw err;
+  } finally {
+    await logger.close();
   }
 }
