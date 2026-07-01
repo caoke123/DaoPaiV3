@@ -97,7 +97,7 @@ function renderLogLines(logs: TaskLogEntry[], isIdle: boolean, isRunning: boolea
       <div className="log-line" style={{ opacity: 0.5 }}>
         <span className="log-ts">--:--:--</span>
         <span className="log-lv info">INFO</span>
-        <span className="log-msg">任务启动中...</span>
+        <span className="log-msg">等待员工窗口日志...</span>
       </div>
     );
   }
@@ -145,7 +145,6 @@ export default function ScanWorkbench({ title, description, submitApi, hideWaybi
 
   const [selectedWorkers, setSelectedWorkers] = useState<string[]>([]);
   const [selectedSigner, setSelectedSigner] = useState<string>(SUPPORTED_SIGNERS[0]);
-  const [diagnosticExpanded, setDiagnosticExpanded] = useState(false);
 
   // ── Phase 1: 执行模式状态 ──
   const [executionMode, setExecutionMode] = useState<ExecutionMode>('default');
@@ -902,38 +901,7 @@ export default function ScanWorkbench({ title, description, submitApi, hideWaybi
           </div>
         </div>
 
-        {/* 系统诊断日志默认折叠，员工日志作为主视图 */}
-        {taskActive && (
-          <div className="log-matrix cols-1" style={{ marginBottom: '12px' }}>
-            <div className="log-card">
-              <div className="log-card-head">
-                <div className="log-avatar" style={{ background: 'var(--text-3)' }}>
-                  <ListChecks size={12} />
-                </div>
-                <div>
-                  <div className="log-name">系统日志 / 诊断信息</div>
-                  <div className="log-empno">全局执行信息</div>
-                </div>
-                <div className="log-progress-right">
-                  <span className="log-count"><b>{globalLogs.length}</b> 条</span>
-                  <button className="btn-sm" type="button" onClick={() => setDiagnosticExpanded(v => !v)}>
-                    {diagnosticExpanded ? '收起' : '展开'}
-                  </button>
-                </div>
-              </div>
-              {diagnosticExpanded && (
-                <>
-                  <div className="log-progress-bar">
-                    <div className="log-progress-fill" style={{ width: '100%', background: 'var(--text-3)' }} />
-                  </div>
-                  <div className="log-body">
-                    {renderLogLines(globalLogs, isIdle, isRunning || logsIsRunning)}
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        )}
+        {/* Phase 5-G-5: 系统日志面板已隐藏，业务页只显示员工窗口日志 */}
 
         {displayWorkers.length > 0 ? (
           <div className={`log-matrix ${colsClass}`}>
@@ -969,13 +937,11 @@ export default function ScanWorkbench({ title, description, submitApi, hideWaybi
           <div className="log-matrix cols-1">
             <div className="log-card">
               <div className="log-card-head">
-                <div className="log-avatar" style={{ background: 'var(--text-3)' }}>
-                  <svg viewBox="0 0 10 10" fill="none" stroke="white" strokeWidth="1.5" width="12" height="12">
-                    <path d="M3 4h4M3 6h3M5 2v8" />
-                  </svg>
+                <div className="log-avatar" style={{ background: 'var(--brand)' }}>
+                  <ListChecks size={12} />
                 </div>
                 <div>
-                  <div className="log-name">系统日志 / 诊断信息</div>
+                  <div className="log-name">员工窗口日志</div>
                   <div className="log-empno">选择节点后显示分窗口日志</div>
                 </div>
               </div>
@@ -983,15 +949,11 @@ export default function ScanWorkbench({ title, description, submitApi, hideWaybi
                 <div className="log-progress-fill" style={{ width: '0%', background: 'var(--text-3)' }} />
               </div>
               <div className="log-body">
-                {globalLogs.length > 0
-                  ? renderLogLines(globalLogs, isIdle, isRunning || logsIsRunning)
-                  : (
-                    <div className="log-line" style={{ opacity: 0.5 }}>
-                      <span className="log-ts">--:--:--</span>
-                      <span className="log-lv info">INFO</span>
-                      <span className="log-msg">请先录入运单号并选择执行窗口</span>
-                    </div>
-                  )}
+                <div className="log-line" style={{ opacity: 0.5 }}>
+                  <span className="log-ts">--:--:--</span>
+                  <span className="log-lv info">INFO</span>
+                  <span className="log-msg">等待员工窗口日志...</span>
+                </div>
               </div>
             </div>
           </div>

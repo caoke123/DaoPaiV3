@@ -838,6 +838,16 @@ export class AssignmentEngine {
     const { staffName } = assignment;
 
     try {
+      // Phase 5-G-5: 连接前先写日志并立即 flush，前端可见"正在连接员工窗口..."
+      pgLogBuffer.push({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        taskId, timestamp: Date.now(), level: 'info',
+        message: `正在连接员工窗口...`,
+        source: taskContext.taskType,
+        staffName: staffName,
+      });
+      await flushPgLogs();
+
       // ★ Phase 2-D: 统一通过 resolveWorkerConnection 获取窗口连接
       //   - legacy 路径：pool.getStaffConnection + acquireWindowLease + ensureWindowReady
       //   - playwright 路径：adapter.ensureWindowReady + lockManager.acquire + adapter.markBusy + getWorkerPage
@@ -916,6 +926,10 @@ export class AssignmentEngine {
           runtimeKey: conn.runtimeKey,
           runtimeMode: conn.runtimeMode,
         };
+
+        // Phase 5-G-5: 执行前先写日志并 flush，确保前端看到"开始执行业务操作"
+        staffLog('info', `员工窗口已就绪，开始执行业务操作...`);
+        await flushPgLogs();
 
         // Phase G-3: Promise.race 竞速
         // - handler.executeWorker → 正常完成

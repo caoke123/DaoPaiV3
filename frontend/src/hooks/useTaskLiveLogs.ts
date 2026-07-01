@@ -65,6 +65,10 @@ export function useTaskLiveLogs(options: UseTaskLiveLogsOptions): UseTaskLiveLog
   const finalFetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stoppedRef = useRef(false);
   const workersRef = useRef<string[]>(workers);
+  // Phase 5-G-5: 跟踪进度变化，用于触发立即补拉日志
+  const lastProgressRef = useRef<{ doneCount: number; failCount: number; status: string }>({
+    doneCount: 0, failCount: 0, status: 'idle',
+  });
 
   workersRef.current = workers;
 
@@ -229,6 +233,24 @@ export function useTaskLiveLogs(options: UseTaskLiveLogsOptions): UseTaskLiveLog
       try {
         const s = await getTaskStatus(taskId);
         setStatus(s.status);
+
+        // Phase 5-G-5: 进度/状态变化时立即补拉日志，减少日志滞后
+        const prev = lastProgressRef.current;
+        const progressChanged = s.doneCount !== prev.doneCount || s.failCount !== prev.failCount;
+        const statusChanged = s.status !== prev.status;
+        lastProgressRef.current = { doneCount: s.doneCount, failCount: s.failCount, status: s.status };
+
+        if (progressChanged || statusChanged) {
+          try {
+            const data = await getTaskLogsById(taskId, 500);
+            if (data.logs.length > 0) {
+              upsertLogs(data.logs);
+            }
+          } catch {
+            // ignore
+          }
+        }
+
         if (s.status === 'done' || s.status === 'failed' || s.status === 'cancelled') {
           handleFinished(taskId, s.status);
         }

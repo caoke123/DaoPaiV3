@@ -61,7 +61,7 @@ function renderLogLines(logs: TaskLogEntry[], isIdle: boolean, isRunning: boolea
       <div className="log-line" style={{ opacity: 0.5 }}>
         <span className="log-ts">--:--:--</span>
         <span className="log-lv info">INFO</span>
-        <span className="log-msg">任务启动中...</span>
+        <span className="log-msg">等待员工窗口日志...</span>
       </div>
     );
   }
@@ -107,7 +107,6 @@ export default function SignPage() {
 
   const [selectedWorkers, setSelectedWorkers] = useState<string[]>([]);
   const [workerPageSizes, setWorkerPageSizes] = useState<Record<string, PageSizeOption>>({});
-  const [diagnosticExpanded, setDiagnosticExpanded] = useState(false);
 
   const {
     taskId, liveStatus, submitting, totalCount, doneCount, successCount, failedCount,
@@ -794,49 +793,18 @@ export default function SignPage() {
           </div>
         </div>
 
-        {/* 系统诊断日志默认折叠，员工日志作为主视图 */}
-        {taskActive && (
-          <div className="log-matrix cols-1" style={{ marginBottom: '12px' }}>
-            <div className="log-card">
-              <div className="log-card-head">
-                <div className="log-avatar" style={{ background: 'var(--text-3)' }}>
-                  <ListChecks size={12} />
-                </div>
-                <div>
-                  <div className="log-name">系统日志 / 诊断信息</div>
-                  <div className="log-empno">全局执行信息</div>
-                </div>
-                <div className="log-progress-right">
-                  <span className="log-count"><b>{globalLogs.length}</b> 条</span>
-                  <button className="btn-sm" type="button" onClick={() => setDiagnosticExpanded(v => !v)}>
-                    {diagnosticExpanded ? '收起' : '展开'}
-                  </button>
-                </div>
-              </div>
-              {diagnosticExpanded && (
-                <>
-                  <div className="log-progress-bar">
-                    <div className="log-progress-fill" style={{ width: '100%', background: 'var(--text-3)' }} />
-                  </div>
-                  <div className="log-body">
-                    {renderLogLines(globalLogs, isIdle, isRunning || logsIsRunning)}
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        )}
+        {/* Phase 5-G-5: 系统日志面板已隐藏，业务页只显示员工窗口日志 */}
 
-        {/* 日志区域：0个派件员显示综合日志；≥1个派件员显示派件员窗口日志 */}
+        {/* 日志区域：0个派件员显示占位；≥1个派件员显示派件员窗口日志 */}
         {displayWorkers.length === 0 ? (
           <div className="log-matrix cols-1">
             <div className="log-card">
               <div className="log-card-head">
-                <div className="log-avatar" style={{ background: 'var(--text-3)' }}>
+                <div className="log-avatar" style={{ background: 'var(--brand)' }}>
                   <ListChecks size={12} />
                 </div>
                 <div>
-                  <div className="log-name">系统日志 / 诊断信息</div>
+                  <div className="log-name">员工窗口日志</div>
                   <div className="log-empno">选择派件员后显示独立窗口日志</div>
                 </div>
               </div>
@@ -844,15 +812,11 @@ export default function SignPage() {
                 <div className="log-progress-fill" style={{ width: '0%', background: 'var(--text-3)' }} />
               </div>
               <div className="log-body">
-                {globalLogs.length > 0
-                  ? renderLogLines(globalLogs, isIdle, isRunning || logsIsRunning)
-                  : (
-                    <div className="log-line" style={{ opacity: 0.5 }}>
-                      <span className="log-ts">--:--:--</span>
-                      <span className="log-lv info">INFO</span>
-                      <span className="log-msg">请选择派件员启动任务</span>
-                    </div>
-                  )}
+                <div className="log-line" style={{ opacity: 0.5 }}>
+                  <span className="log-ts">--:--:--</span>
+                  <span className="log-lv info">INFO</span>
+                  <span className="log-msg">等待员工窗口日志...</span>
+                </div>
               </div>
             </div>
           </div>

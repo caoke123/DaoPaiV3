@@ -180,7 +180,7 @@ async function main(): Promise<void> {
   }
 
   console.log('');
-  console.log('心跳循环已启动，每 15 秒上报一次...');
+  console.log(`心跳循环已启动，每 ${(config.heartbeatIntervalMs / 1000).toFixed(0)} 秒上报一次...`);
   console.log('按 Ctrl+C 停止\n');
   logger.info('心跳循环已启动');
 
