@@ -363,69 +363,76 @@ async function stableFillPrevStation(
   meta?: AgentRuntimeMeta,
 ): Promise<boolean> {
   const MAX_RETRIES = 3;
+  const DROPDOWN_VISIBLE = 'body > div.el-select-dropdown.el-popper:not([style*="display: none"])';
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     log?.('info', `[Agent][Arrival] 上一站填写第 ${attempt}/${MAX_RETRIES} 次尝试`, meta);
 
     try {
-      // Step 1: Click prevStationInput to open popper & remove readonly
+      // Cleanup residual poppers from previous attempts (matches Sign/bnsy-operator pattern)
+      await page.keyboard.press('Escape').catch(() => {});
+      await page.waitForTimeout(300);
+
+      // Step 1: Click input with force:true to open popper
+      //   force:true bypasses actionability checks (readonly input + background tab CDP mode)
+      //   This is the proven pattern from Sign setPageSize and bnsy-operator
       const prevInput = page.locator(ARRIVAL_BATCH_SELECTORS.prevStationInput).first();
       await prevInput.waitFor({ state: 'visible', timeout: 10_000 });
-      await prevInput.click({ timeout: 10_000 });
+      await prevInput.click({ timeout: 5000, force: true });
 
-      // Step 2: Wait for el-select-dropdown popper
-      try {
-        await page.waitForSelector('body > div.el-select-dropdown.el-popper', {
-          state: 'visible',
-          timeout: 5000,
-        });
-      } catch {
-        log?.('warning', '[Agent][Arrival] 上一站 popper 未在 5 秒内出现', meta);
-        await page.keyboard.press('Escape').catch(() => {});
-        await page.waitForTimeout(300);
+      // Step 2: Wait 800ms for Element UI el-zoom-in-top animation to complete
+      //   (matches Sign setPageSize / bnsy-operator PaginationAdapter / bnsyV2 IntegratedScan)
+      await page.waitForTimeout(800);
+
+      // Step 3: Check popper appeared (use count() instead of waitForSelector for faster feedback)
+      const popperCount = await page.locator(DROPDOWN_VISIBLE).count().catch(() => 0);
+      if (popperCount === 0) {
+        log?.('warning', '[Agent][Arrival] 上一站 popper 未在 800ms 内出现', meta);
         continue;
       }
 
-      // Step 3: Type prevStation into the input to filter the popper
-      //   Element UI internally filters the dropdown based on input value
+      // Step 4: Type prevStation to trigger Element UI internal filter
       //   DevTools confirmed: 3295 items → 1 visible item in <1s
       await prevInput.fill(prevStation, { timeout: 5000 });
       log?.('info', `[Agent][Arrival] 已输入上一站: ${prevStation}`, meta);
-
-      // Step 4: Wait for filter to settle, then click the matching option
       await page.waitForTimeout(300);
 
-      const optionLocator = page.locator(
-        `body > div.el-select-dropdown.el-popper li.el-select-dropdown__item:has-text("${prevStation}")`
-      );
-      try {
-        await optionLocator.first().waitFor({ state: 'visible', timeout: 5000 });
-      } catch {
+      // Step 5: Click option via page.evaluate DOM click
+      //   Element UI dropdown items in background tabs have CSS animation issues
+      //   (height=0, opacity=0, viewport offset). page.evaluate bypasses all checks.
+      //   Matches Sign setPageSize / bnsy-operator / bnsyV2 proven pattern.
+      const clicked = await page.evaluate((text: string) => {
+        const items = document.querySelectorAll(
+          '.el-select-dropdown:not([style*="display: none"]) .el-select-dropdown__item',
+        );
+        for (const item of items) {
+          if ((item.textContent ?? '').trim() === text) {
+            (item as HTMLElement).click();
+            return true;
+          }
+        }
+        return false;
+      }, prevStation);
+
+      if (!clicked) {
         log?.('warning', `[Agent][Arrival] 候选项"${prevStation}"未在过滤后出现`, meta);
-        await page.keyboard.press('Escape').catch(() => {});
-        await page.waitForTimeout(300);
         continue;
       }
 
-      await optionLocator.first().click({ timeout: 5000 });
       await page.waitForTimeout(500);
       log?.('info', `[Agent][Arrival] 已点击候选项: ${prevStation}`, meta);
 
-      // Step 5: Verify selection
+      // Step 6: Verify selection
       const verified = await verifyPrevStationSelected(page, prevStation, log, meta);
       if (verified) {
         log?.('success', `[Agent][Arrival] 目标上一站=${prevStation}，页面上一站已验证`, meta);
         return true;
       }
 
-      // Verification failed: close residual popper, retry
+      // Verification failed: retry
       log?.('warning', `[Agent][Arrival] 上一站校验失败（第 ${attempt} 次），准备重试`, meta);
-      await page.keyboard.press('Escape').catch(() => {});
-      await page.waitForTimeout(300);
     } catch (err) {
       log?.('warning', `[Agent][Arrival] 上一站填写第 ${attempt} 次异常: ${(err as Error).message}`, meta);
-      await page.keyboard.press('Escape').catch(() => {});
-      await page.waitForTimeout(300);
     }
 
     if (attempt < MAX_RETRIES) {
