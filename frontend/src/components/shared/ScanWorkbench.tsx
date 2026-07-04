@@ -5,12 +5,14 @@
 // Phase 5-G-2: 使用 useTaskLiveLogs 统一日志获取，SSE + PG 轮询合并
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { AlertCircle, RotateCcw, Wand2, Trash2, Shield, AlertTriangle, ListChecks } from 'lucide-react';
-import { submitTask, type TaskLogEntry } from '../../api/client';
+import { submitTask } from '../../api/client';
 import { useWindowState } from '../shared/WindowStateProvider';
 import { useTaskExecution } from '../shared/TaskExecutionContext';
 import { useRuntimeMode } from '../shared/RuntimeModeProvider';
 import { useTaskLiveLogs } from '../../hooks/useTaskLiveLogs';
 import type { PlaywrightSiteWindowState } from '../../api/client';
+import type { TaskType } from '../../lib/task-log-display/types';
+import TaskLogDisplay from './TaskLogDisplay';
 import { buildAssignments } from '../../lib/assignment-builder';
 import {
   getWindowDisplayStatus,
@@ -34,6 +36,7 @@ const SUPPORTED_SIGNERS = [
 export type ExecutionMode = 'default' | 'designated';
 
 export interface ScanWorkbenchProps {
+  taskType: TaskType;
   title: string;
   description: string;
   submitApi: string;
@@ -76,45 +79,7 @@ function generateMagicWaybills(count: number = 50): string {
   return waybills.join('\n');
 }
 
-function formatTime(ts: number): string {
-  const d = new Date(ts);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-}
-
-function renderLogLines(logs: TaskLogEntry[], isIdle: boolean, isRunning: boolean) {
-  if (logs.length === 0 && isIdle) {
-    return (
-      <div className="log-line" style={{ opacity: 0.5 }}>
-        <span className="log-ts">--:--:--</span>
-        <span className="log-lv info">INFO</span>
-        <span className="log-msg">等待启动...</span>
-      </div>
-    );
-  }
-  if (logs.length === 0 && isRunning) {
-    return (
-      <div className="log-line" style={{ opacity: 0.5 }}>
-        <span className="log-ts">--:--:--</span>
-        <span className="log-lv info">INFO</span>
-        <span className="log-msg">等待员工窗口日志...</span>
-      </div>
-    );
-  }
-  return logs.slice().reverse().map((log, idx) => {
-    const lvCls = log.level === 'error' ? 'err' : log.level === 'warning' ? 'warn' : log.level === 'success' ? 'ok' : 'info';
-    const lvText = log.level === 'warning' ? 'WARN' : log.level === 'success' ? 'OK' : log.level.toUpperCase().slice(0, 4);
-    return (
-      <div key={log.id} className={`log-line${idx === 0 ? ' latest' : ''}`}>
-        <span className="log-ts">{formatTime(log.timestamp)}</span>
-        <span className={`log-lv ${lvCls}`}>{lvText}</span>
-        <span className="log-msg">{log.message}</span>
-      </div>
-    );
-  });
-}
-
-export default function ScanWorkbench({ title, description, submitApi, hideWaybillInput = false, enableExecutionMode = false }: ScanWorkbenchProps) {
+export default function ScanWorkbench({ taskType, title, description, submitApi, hideWaybillInput = false, enableExecutionMode = false }: ScanWorkbenchProps) {
   const execPanelRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastActiveSiteRef = useRef<string | null>(null);
@@ -947,7 +912,7 @@ export default function ScanWorkbench({ title, description, submitApi, hideWaybi
                     <div className="log-progress-fill" style={{ width: `${pct}%`, background: color }} />
                   </div>
                   <div className="log-body">
-                    {renderLogLines(logs, isIdle, isRunning || logsIsRunning)}
+                    <TaskLogDisplay taskType={taskType} logs={logs} />
                   </div>
                 </div>
               );
