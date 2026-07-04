@@ -83,6 +83,11 @@ export class PopupManager {
     lastCleanupTime: null,
   };
 
+  /** 已注册 dialog handler 的 page 集合（WeakSet 防止重复注册） */
+  private registeredPages = new WeakSet<Page>();
+  /** 登录守卫期间暂停自动处理原生 dialog，让外层按超时重启策略处理 */
+  private suspendedDialogPages = new WeakSet<Page>();
+
   private constructor() {}
 
   static getInstance(): PopupManager {
@@ -97,24 +102,46 @@ export class PopupManager {
   /**
    * 为指定 page 注册全局弹窗拦截
    * 替代 BrowserPool 中的 page.on('dialog') 内联注册
+   *
+   * @param page      Playwright Page
+   * @param staffName 可选，员工姓名，用于弹窗日志标注
    */
-  register(page: Page): void {
+  register(page: Page, staffName?: string): void {
+    // 防止同一 page 重复注册 listener
+    if (this.registeredPages.has(page)) return;
+    this.registeredPages.add(page);
+
+    const staffTag = staffName ? `[${staffName}] ` : '';
+
     page.on('dialog', async (dialog) => {
       const type = dialog.type();
       const message = dialog.message();
       const url = page.url();
 
-      console.log(`[PopupManager] dialog.${type}: "${message}" @ ${url}`);
+      console.log(`${staffTag}[PopupManager] dialog.${type}: "${message}" @ ${url}`);
+
+      if (this.suspendedDialogPages.has(page)) {
+        console.warn(`${staffTag}[PopupManager] dialog 自动处理已暂停，等待登录守卫重启窗口: "${message}"`);
+        return;
+      }
 
       try {
-        // alert 使用 accept() 点击"确定"；confirm/prompt 使用 dismiss() 取消
+        // 对 alert / confirm / prompt 统一 accept（点击确定）
         if (type === 'alert') {
           await dialog.accept();
           this.stats.nativeAlertDismissed++;
-          console.log(`[Popup] 已关闭登录后弹窗：${message}`);
+          console.log(`${staffTag}[Popup] 检测到浏览器弹窗：${message}`);
+          console.log(`${staffTag}[Popup] 已关闭浏览器弹窗，继续执行`);
         } else if (type === 'confirm') {
-          await dialog.dismiss();
+          await dialog.accept();
           this.stats.nativeConfirmDismissed++;
+          console.log(`${staffTag}[Popup] 检测到浏览器弹窗(confirm)：${message}`);
+          console.log(`${staffTag}[Popup] 已关闭浏览器弹窗(confirm)，继续执行`);
+        } else if (type === 'prompt') {
+          await dialog.accept('');
+          this.stats.otherDismissed++;
+          console.log(`${staffTag}[Popup] 检测到浏览器弹窗(prompt)：${message}`);
+          console.log(`${staffTag}[Popup] 已关闭浏览器弹窗(prompt)，继续执行`);
         } else {
           await dialog.dismiss();
           this.stats.otherDismissed++;
@@ -122,10 +149,25 @@ export class PopupManager {
       } catch (e) {
         // "No dialog is showing" — 无害竞争条件，dialog 已自动关闭
         if (!(e as Error).message.includes('No dialog is showing')) {
-          console.warn(`[PopupManager] dialog 处理失败: ${(e as Error).message}`);
+          console.warn(`${staffTag}[PopupManager] dialog 处理失败: ${(e as Error).message}`);
         }
       }
     });
+  }
+
+  /**
+   * 检查 page 是否已注册 dialog handler
+   */
+  isRegistered(page: Page): boolean {
+    return this.registeredPages.has(page);
+  }
+
+  suspendDialogHandling(page: Page): void {
+    this.suspendedDialogPages.add(page);
+  }
+
+  resumeDialogHandling(page: Page): void {
+    this.suspendedDialogPages.delete(page);
   }
 
   // ── dismissAll: 清除所有弹窗（一次性） ──
@@ -152,7 +194,7 @@ export class PopupManager {
       // 超时，继续验证
     }
 
-    // 等待 toast 消失
+    // P0 策略：无论当前是否立刻可见，都给 toast/notification 动画一个稳定窗口。
     await page.waitForSelector('.el-message, .el-notification', { state: 'hidden', timeout: 2000 }).catch(() => {});
 
     if (verifyAfter) {
@@ -190,7 +232,51 @@ export class PopupManager {
 
       let foundInThisRound = 0;
 
-      // 1. 处理 el-dialog / pay-dialog
+      // 1. 先处理最上层 el-message-box。
+      // 例如余额不足弹窗点击 X 后会出现“确认关闭?”，正确动作是先点“取 消”，
+      // 不要继续点击后层 dialog 的 X，否则会反复制造/叠加确认框。
+      const msgBoxes = await page.$$('.el-message-box:not([style*="display: none"])').catch(() => []);
+      let visibleMessageBoxHandled = false;
+      for (const box of msgBoxes) {
+        const isVisible = await box.isVisible().catch(() => false);
+        if (!isVisible) continue;
+
+        const btnWrapper = await box.$('.el-message-box__btns').catch(() => null);
+        const searchEl = btnWrapper ?? box;
+        const cancelClicked = await this.clickCancelButton(searchEl);
+        if (cancelClicked) {
+          totalDismissed++;
+          foundInThisRound++;
+          visibleMessageBoxHandled = true;
+          await page.waitForTimeout(300).catch(() => {});
+          continue;
+        }
+
+        const clicked = await this.clickSmartButton(searchEl);
+        if (clicked) {
+          totalDismissed++;
+          foundInThisRound++;
+          visibleMessageBoxHandled = true;
+          await page.waitForTimeout(300).catch(() => {});
+          continue;
+        }
+
+        const closeBtn = await box.$('.el-message-box__headerbtn').catch(() => null);
+        if (closeBtn) {
+          await closeBtn.click().catch(() => {});
+          totalDismissed++;
+          foundInThisRound++;
+          visibleMessageBoxHandled = true;
+          await page.waitForTimeout(300).catch(() => {});
+        }
+      }
+
+      if (visibleMessageBoxHandled) {
+        onCount(totalDismissed);
+        continue;
+      }
+
+      // 2. 处理 el-dialog / pay-dialog
       for (const sel of STUBBORN_DIALOG_SELECTORS) {
         const dialogWrappers = await page.$$(sel).catch(() => []);
         for (const wrapper of dialogWrappers) {
@@ -219,23 +305,6 @@ export class PopupManager {
             totalDismissed++; foundInThisRound++;
             await page.waitForTimeout(300).catch(() => {});
           }
-        }
-      }
-
-      // 2. 处理 el-message-box
-      const msgBoxes = await page.$$('.el-message-box:not([style*="display: none"])').catch(() => []);
-      for (const box of msgBoxes) {
-        const isVisible = await box.isVisible().catch(() => false);
-        if (!isVisible) continue;
-        const btnWrapper = await box.$('.el-message-box__btns').catch(() => null);
-        const searchEl = btnWrapper ?? box;
-        const clicked = await this.clickSmartButton(searchEl);
-        if (clicked) { totalDismissed++; foundInThisRound++; await page.waitForTimeout(300).catch(() => {}); continue; }
-        const closeBtn = await box.$('.el-message-box__headerbtn').catch(() => null);
-        if (closeBtn) {
-          await closeBtn.click().catch(() => {});
-          totalDismissed++; foundInThisRound++;
-          await page.waitForTimeout(300).catch(() => {});
         }
       }
 
@@ -328,6 +397,216 @@ export class PopupManager {
     };
   }
 
+  // ── dismissRechargeCancelDialog: 快速清理充值/余额不足弹窗 + 二次确认框 ──
+  // Phase 5-G-8-2: 基于 Chrome DevTools MCP 真实DOM排查结果实现
+  //
+  // DevTools MCP 真实DOM结论（肖飞账号，2026-07-01）：
+  // - 充值弹窗根节点: .el-dialog__wrapper.pay-dialog (z-index:2002, position:fixed)
+  // - 内部结构: .el-dialog[role=dialog][aria-modal=true] > .el-dialog__header + .el-dialog__body + .el-dialog__footer
+  // - 取消按钮: .el-dialog__footer .el-button > span ("取 消"，文本中间有空格)
+  // - X按钮: .el-dialog__headerbtn[aria-label=Close] (点击后触发二次确认框，禁止优先使用)
+  // - 二次确认框: .el-message-box__wrapper > .el-message-box ("确认关闭？")，含"取消""确定"按钮
+  // - 遮罩层: .v-modal
+  // - 原生alert: "网点余额低于警戒金额!"（页面加载/导航时出现，阻塞JS执行）
+  //
+  // 策略优先级：
+  // 1. 最上层 .el-message-box 二次确认框 → 点"取消/取 消"
+  // 2. .pay-dialog 充值弹窗 → 点footer内"取消/取 消"
+  // 3. 其他 .el-dialog__wrapper (标题含"充值/余额不足/警告") → 点footer取消
+  // 全部短超时，无弹窗立即返回，不做全量清理
+
+  /**
+   * 快速清理充值弹窗和二次确认框
+   * 设计原则：短超时、快速返回、优先"取消"按钮、不点X（X触发二次确认）
+   * @returns true=成功关闭了至少一个弹窗; false=无可关闭弹窗
+   */
+  async dismissRechargeCancelDialog(page: Page): Promise<boolean> {
+    const start = Date.now();
+    let closedAny = false;
+    try {
+      // Step 1: 先处理最上层 .el-message-box（二次确认框"确认关闭？"）
+      const msgBoxes = await page.$$('.el-message-box__wrapper:not([style*="display: none"]) .el-message-box, .el-message-box:not([style*="display: none"])').catch(() => []);
+      for (const box of msgBoxes) {
+        const isVisible = await box.isVisible().catch(() => false);
+        if (!isVisible) continue;
+        const btns = await box.$$('.el-message-box__btns .el-button, .el-message-box__btns button').catch(() => []);
+        for (const btn of btns) {
+          const rawText = (await btn.textContent().catch(() => '')) ?? '';
+          const normalized = rawText.replace(/\s+/g, '');
+          if (normalized === '取消') {
+            const btnVisible = await btn.isVisible().catch(() => false);
+            if (btnVisible) {
+              console.log(`[PopupManager] dismissRechargeCancelDialog: 点击确认框"${rawText.trim()}"`);
+              await btn.click({ timeout: 1500 }).catch(() => {});
+              await page.waitForTimeout(300).catch(() => {});
+              closedAny = true;
+              break;
+            }
+          }
+        }
+        if (closedAny) break;
+      }
+
+      // Step 2: 处理 .pay-dialog 充值弹窗（余额不足警告）
+      const payDialogs = await page.$$('.el-dialog__wrapper.pay-dialog:not([style*="display: none"])').catch(() => []);
+      for (const wrapper of payDialogs) {
+        const isVisible = await wrapper.isVisible().catch(() => false);
+        if (!isVisible) continue;
+
+        // 优先点 footer 里的"取消/取 消"按钮
+        const footer = await wrapper.$('.el-dialog__footer').catch(() => null);
+        let clicked = false;
+        if (footer) {
+          const cancelBtns = await footer.$$('.el-button, button').catch(() => []);
+          for (const btn of cancelBtns) {
+            const rawText = (await btn.textContent().catch(() => '')) ?? '';
+            const normalized = rawText.replace(/\s+/g, '');
+            if (normalized === '取消') {
+              const btnVisible = await btn.isVisible().catch(() => false);
+              if (btnVisible) {
+                console.log(`[PopupManager] dismissRechargeCancelDialog: 点击充值弹窗"${rawText.trim()}"`);
+                await btn.click({ timeout: 1500 }).catch(() => {});
+                clicked = true;
+                closedAny = true;
+                break;
+              }
+            }
+          }
+        }
+
+        // 如果footer没找到取消按钮，在整个dialog内搜索（兜底）
+        if (!clicked) {
+          const allBtns = await wrapper.$$('.el-button, button').catch(() => []);
+          for (const btn of allBtns) {
+            const rawText = (await btn.textContent().catch(() => '')) ?? '';
+            const normalized = rawText.replace(/\s+/g, '');
+            if (normalized === '取消') {
+              const btnVisible = await btn.isVisible().catch(() => false);
+              if (btnVisible) {
+                console.log(`[PopupManager] dismissRechargeCancelDialog: 兜底点击"${rawText.trim()}"`);
+                await btn.click({ timeout: 1500 }).catch(() => {});
+                clicked = true;
+                closedAny = true;
+                break;
+              }
+            }
+          }
+        }
+
+        // 不点击X按钮（会触发二次确认框，增加复杂度）
+        if (!clicked) {
+          console.log('[PopupManager] dismissRechargeCancelDialog: 充值弹窗未找到取消按钮，跳过');
+        }
+      }
+
+      // Step 3: 处理其他 .el-dialog__wrapper（标题含充值/余额不足/警告的弹窗）
+      const otherDialogs = await page.$$('.el-dialog__wrapper:not(.pay-dialog):not([style*="display: none"])').catch(() => []);
+      for (const wrapper of otherDialogs) {
+        const isVisible = await wrapper.isVisible().catch(() => false);
+        if (!isVisible) continue;
+        const titleText = (await wrapper.$eval('.el-dialog__title', (el: Element) => el.textContent?.trim() ?? '').catch(() => '')) ?? '';
+        const isRechargeRelated = /充值|余额不足|警告|缴费|付费/.test(titleText);
+        if (!isRechargeRelated) continue;
+
+        const footer = await wrapper.$('.el-dialog__footer').catch(() => null);
+        if (footer) {
+          const cancelBtns = await footer.$$('.el-button, button').catch(() => []);
+          for (const btn of cancelBtns) {
+            const rawText = (await btn.textContent().catch(() => '')) ?? '';
+            const normalized = rawText.replace(/\s+/g, '');
+            if (normalized === '取消') {
+              const btnVisible = await btn.isVisible().catch(() => false);
+              if (btnVisible) {
+                console.log(`[PopupManager] dismissRechargeCancelDialog: 点击"${titleText}"弹窗"${rawText.trim()}"`);
+                await btn.click({ timeout: 1500 }).catch(() => {});
+                closedAny = true;
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      // 等待弹窗消失（最多1500ms）
+      if (closedAny) {
+        await page.waitForTimeout(500).catch(() => {});
+        // 验证pay-dialog是否隐藏
+        const stillVisible = await page.$('.el-dialog__wrapper.pay-dialog:not([style*="display: none"])').catch(() => null);
+        if (stillVisible) {
+          const vis = await stillVisible.isVisible().catch(() => false);
+          if (vis) {
+            // 可能出现了二次确认框，再处理一次
+            const msgBtn = await page.$('.el-message-box__btns .el-button:not(.el-button--primary)').catch(() => null);
+            if (msgBtn) {
+              const msgBtnVis = await msgBtn.isVisible().catch(() => false);
+              if (msgBtnVis) {
+                await msgBtn.click({ timeout: 1500 }).catch(() => {});
+                await page.waitForTimeout(500).catch(() => {});
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn(`[PopupManager] dismissRechargeCancelDialog 异常: ${(e as Error).message}`);
+    }
+    if (closedAny) {
+      console.log(`[PopupManager] dismissRechargeCancelDialog 完成 (${Date.now() - start}ms)`);
+    }
+    return closedAny;
+  }
+
+  // ── dismissTopCancelConfirm: 快速清理最上层"取 消"确认框 ──
+  // Phase 5-G-8-1: 导航前后快速清理二次确认框，不做全量弹窗清理
+  // Phase 5-G-8-2: 标记为 @deprecated，建议使用 dismissRechargeCancelDialog 替代
+
+  /**
+   * 快速清理最上层 .el-message-box 的"取消/取 消"按钮。
+   *
+   * 设计原则：
+   * - 只处理最上层 .el-message-box（不处理 dialog、overlay、toast）
+   * - 优先点"取消/取 消"（去除空格匹配）
+   * - 默认超时极短（2000ms），无弹窗时立即返回
+   * - 不调用 dismissAll，不做后续弹窗检查，不破坏原有 dismissAll 逻辑
+   * - 导航前后调用，用于防止旧页面的二次确认框阻塞新页面加载
+   *
+   * @returns true=点击了取消按钮; false=无取消按钮/无弹窗
+   */
+  async dismissTopCancelConfirm(page: Page): Promise<boolean> {
+    try {
+      const msgBoxes = await page.$$('.el-message-box:not([style*="display: none"])').catch(() => []);
+      for (const box of msgBoxes) {
+        const isVisible = await box.isVisible().catch(() => false);
+        if (!isVisible) continue;
+
+        // 在 message-box 内找按钮，优先"取消"（去除空格匹配 取 消）
+        const buttons = await box.$$('.el-message-box__btns button, .el-message-box__btns .el-button').catch(() => []);
+        for (const btn of buttons) {
+          const rawText = (await btn.textContent().catch(() => '')) ?? '';
+          const normalized = rawText.replace(/\s+/g, '');
+          if (normalized === '取消') {
+            const btnVisible = await btn.isVisible().catch(() => false);
+            if (btnVisible) {
+              console.log(`[PopupManager] dismissTopCancelConfirm: 点击"${rawText.trim()}"`);
+              await btn.click({ timeout: 2000 }).catch(() => {});
+              await page.waitForTimeout(400).catch(() => {});
+              // 等待 message-box 消失
+              await box.waitForElementState('hidden', { timeout: 3000 }).catch(() => {});
+              return true;
+            }
+          }
+        }
+
+        // 没有找到取消按钮，跳过（不强行点其他按钮）
+        return false;
+      }
+    } catch (e) {
+      // 快速清理失败不应阻塞导航
+      console.warn(`[PopupManager] dismissTopCancelConfirm 异常: ${(e as Error).message}`);
+    }
+    return false;
+  }
+
   // ── backgroundCleanup: 后台轻量清理 ──
 
   /** 对单个 page 执行轻量弹窗清理（替代 index.ts 中每10秒全窗口清理） */
@@ -340,6 +619,23 @@ export class PopupManager {
   private isCloseConfirmation(text: string): boolean {
     const normalized = text.replace(/\s+/g, '');
     return CLOSE_CONFIRM_KEYWORDS.some(kw => normalized.includes(kw));
+  }
+
+  private async clickCancelButton(container: ElementHandle): Promise<boolean> {
+    const buttons = await container.$$('button, .el-button, .btn, [role="button"]').catch(() => []);
+    for (const btn of buttons) {
+      const rawText = (await btn.textContent().catch(() => '')) ?? '';
+      const normalized = rawText.replace(/\s+/g, '');
+      if (normalized.includes('取消')) {
+        const isVisible = await btn.isVisible().catch(() => false);
+        if (isVisible) {
+          console.log(`[PopupManager] 点击按钮 "${rawText.trim()}"`);
+          await btn.click().catch(() => {});
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   private async clickSmartButton(container: ElementHandle): Promise<boolean> {
@@ -401,4 +697,5 @@ export class PopupManager {
     }
     return false;
   }
+
 }

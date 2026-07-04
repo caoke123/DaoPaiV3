@@ -1,35 +1,31 @@
 // TaskExecutionContext — 任务执行状态全局上下文
 // Phase 5-G-2: 简化，移除内部日志轮询逻辑，日志统一由 useTaskLiveLogs Hook 处理
+// Phase 5-G-7-2: localStorage 只存索引，真实状态从后端 PG 恢复
 //
 // 职责：
 //   1. 跨页面任务状态持久化（taskId, selectedWorkers, allocations, taskOrigin）
 //   2. 任务进度统计（totalCount, doneCount, successCount, failedCount, workerProgress）
 //   3. SSE 订阅 TASK_PROGRESS/TASK_FINISHED（旧 AssignmentEngine 链路）
 //   4. PG 状态轮询兜底（Agent 任务状态更新）
+//   5. 任务恢复：从 localStorage 加载索引，从 API 恢复完整状态
 //
 // 日志处理：完全交给 useTaskLiveLogs Hook，不再维护 workerLogs
 
 import { createContext, useContext, useState, useRef, useEffect, useCallback, type ReactNode } from 'react';
-import { getTaskProgress, getTaskStatus, type WaybillResult } from '../../api/client';
+import { getTaskProgress, getTaskStatus, getTaskDetail, type WaybillResult, type TaskDetailResponse } from '../../api/client';
 
-// ── Phase 5-G-7: localStorage 任务持久化 ──
+// ── Phase 5-G-7-2: localStorage 最小持久化 ──
 const LS_PREFIX = 'daopai_task_';
 
 interface PersistedTask {
   taskId: string;
+  taskType: string;
   taskOrigin: string;
-  selectedWorkers: string[];
-  allocations: Allocations;
-  liveStatus: LiveStatus;
-  totalCount: number;
-  doneCount: number;
-  successCount: number;
-  failedCount: number;
   savedAt: number;
 }
 
 function persistTask(task: PersistedTask): void {
-  const key = `${LS_PREFIX}${normalizeOriginKey(task.taskOrigin)}`;
+  const key = `${LS_PREFIX}${originToTypeKey(task.taskOrigin)}`;
   try {
     localStorage.setItem(key, JSON.stringify(task));
   } catch { /* quota exceeded */ }
@@ -53,6 +49,19 @@ function clearPersistedTask(originKey: string): void {
 function normalizeOriginKey(origin: string): string {
   const parts = origin.split('/');
   return parts[parts.length - 1] || origin;
+}
+
+/** 将 taskOrigin 映射到 localStorage key（处理 arrive→arrival） */
+function originToTypeKey(origin: string): string {
+  const normalized = normalizeOriginKey(origin);
+  if (normalized === 'arrive') return 'arrival';
+  return normalized;
+}
+
+/** 根据 origin 验证 task type 是否匹配 */
+function taskTypeMatchesOrigin(taskType: string, origin: string): boolean {
+  const typeKey = originToTypeKey(origin);
+  return taskType === typeKey;
 }
 
 // ── 类型 ──
@@ -87,6 +96,8 @@ interface TaskExecutionContextValue {
   startTask: (taskId: string, selectedWorkers: string[], allocations: Allocations, origin: string) => void;
   resetTask: () => void;
   setSubmitting: (v: boolean) => void;
+  /** 从 localStorage + 后端 PG 恢复任务状态，返回是否成功 */
+  restoreTask: (origin: string) => Promise<boolean>;
 }
 
 // ── Context ──
@@ -125,6 +136,9 @@ export function TaskExecutionProvider({ children }: { children: ReactNode }) {
 
   const pgStatusPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pgCompletedRef = useRef(false);
+
+  // 防止同一 origin 重复恢复
+  const restoredRef = useRef<Set<string>>(new Set());
 
   // ── 速率/ETA 计算 ──
   useEffect(() => {
@@ -395,6 +409,92 @@ export function TaskExecutionProvider({ children }: { children: ReactNode }) {
     };
   }, [taskId, updateProgressFromCounts]);
 
+  // ── 从后端恢复任务状态 ──
+  const restoreFromDetail = useCallback((detail: TaskDetailResponse, origin: string) => {
+    const workers = detail.assignments.map(a => a.staffName).filter(Boolean);
+    const allocs: Allocations = {};
+    detail.assignments.forEach(a => {
+      if (a.staffName) allocs[a.staffName] = a.count || 0;
+    });
+
+    selectedWorkersRef.current = workers;
+    allocationsRef.current = allocs;
+    setSelectedWorkers(workers);
+    setAllocations(allocs);
+    setTaskOrigin(origin);
+    taskOriginRef.current = origin;
+    setTaskId(detail.taskId);
+
+    setTotalCount(detail.totalCount);
+    setDoneCount(detail.doneCount);
+    setFailedCount(detail.failCount);
+    setSuccessCount(Math.max(0, detail.doneCount - detail.failCount));
+
+    // 计算 workerProgress
+    const wp: WorkerProgress = {};
+    workers.forEach(name => {
+      const wTotal = allocs[name] || 0;
+      const ratio = detail.totalCount > 0 ? wTotal / detail.totalCount : 0;
+      wp[name] = {
+        done: Math.min(wTotal, Math.round(detail.doneCount * ratio)),
+        total: wTotal,
+        failed: Math.min(wTotal, Math.round(detail.failCount * ratio)),
+      };
+    });
+    setWorkerProgress(wp);
+
+    if (detail.status === 'running' || detail.status === 'assigned' || detail.status === 'pending') {
+      setLiveStatus('running');
+    } else if (detail.status === 'done') {
+      setLiveStatus('completed');
+      setFinishedAt(detail.finishedAt ? new Date(detail.finishedAt).getTime() : Date.now());
+    } else if (detail.status === 'failed' || detail.status === 'cancelled') {
+      setLiveStatus('error');
+      setFinishedAt(detail.finishedAt ? new Date(detail.finishedAt).getTime() : Date.now());
+    } else {
+      setLiveStatus('idle');
+    }
+
+    setRate(0);
+    setEta(null);
+    startTimeRef.current = null;
+    isCompletedRef.current = detail.status === 'done' || detail.status === 'failed' || detail.status === 'cancelled';
+    pgCompletedRef.current = isCompletedRef.current;
+  }, []);
+
+  const restoreTask = useCallback(async (origin: string): Promise<boolean> => {
+    const typeKey = originToTypeKey(origin);
+    const persisted = loadPersistedTask(typeKey);
+    if (!persisted?.taskId) return false;
+
+    // 同一任务已经恢复完整时直接返回；若 workers/stats 仍为空，允许再次从后端补齐。
+    if (restoredRef.current.has(typeKey) && taskId === persisted.taskId && selectedWorkersRef.current.length > 0) {
+      return true;
+    }
+    restoredRef.current.add(typeKey);
+
+    try {
+      const detail = await getTaskDetail(persisted.taskId);
+
+      // 校验 type 匹配
+      if (!taskTypeMatchesOrigin(detail.type, origin)) {
+        console.warn(`[TaskRestore] 任务类型不匹配: localStorage=${typeKey}, API=${detail.type}`);
+        clearPersistedTask(typeKey);
+        restoredRef.current.delete(typeKey);
+        return false;
+      }
+
+      restoreFromDetail(detail, origin);
+      console.log(`[TaskRestore] 恢复任务成功: ${persisted.taskId}, type=${detail.type}, status=${detail.status}, workers=${detail.assignments.length}`);
+      return true;
+    } catch (e) {
+      console.error(`[TaskRestore] 恢复失败:`, (e as Error).message);
+      // API 失败不删除 localStorage，下次重试
+      restoredRef.current.delete(typeKey);
+      return false;
+    }
+  }, [restoreFromDetail, taskId]);
+
   const startTask = useCallback((tid: string, workers: string[], allocs: Allocations, origin: string) => {
     selectedWorkersRef.current = workers;
     allocationsRef.current = allocs;
@@ -416,19 +516,16 @@ export function TaskExecutionProvider({ children }: { children: ReactNode }) {
     isCompletedRef.current = false;
     pgCompletedRef.current = false;
 
-    // Phase 5-G-7: 持久化到 localStorage，支持页面切换恢复
+    // Phase 5-G-7-2: localStorage 只存索引（taskId, taskType, taskOrigin）
+    const typeKey = originToTypeKey(origin);
     persistTask({
       taskId: tid,
+      taskType: typeKey,
       taskOrigin: origin,
-      selectedWorkers: workers,
-      allocations: allocs,
-      liveStatus: 'running',
-      totalCount: 0,
-      doneCount: 0,
-      successCount: 0,
-      failedCount: 0,
       savedAt: Date.now(),
     });
+    // 标记已恢复，防止页面重载后 restoreTask 再来一次覆盖
+    restoredRef.current.add(typeKey);
   }, []);
 
   const resetTask = useCallback(() => {
@@ -444,10 +541,12 @@ export function TaskExecutionProvider({ children }: { children: ReactNode }) {
       clearInterval(pgStatusPollRef.current);
       pgStatusPollRef.current = null;
     }
-    // Phase 5-G-7: 清除 localStorage 任务持久化
+    // Phase 5-G-7-2: 清除 localStorage 任务持久化
     const currentOrigin = taskOriginRef.current;
     if (currentOrigin) {
-      clearPersistedTask(normalizeOriginKey(currentOrigin));
+      const typeKey = originToTypeKey(currentOrigin);
+      clearPersistedTask(typeKey);
+      restoredRef.current.delete(typeKey);
     }
     taskOriginRef.current = null;
     selectedWorkersRef.current = [];
@@ -478,6 +577,7 @@ export function TaskExecutionProvider({ children }: { children: ReactNode }) {
       selectedWorkers, allocations, taskOrigin, finishedAt,
       startTask, resetTask,
       setSubmitting: setSubmittingState,
+      restoreTask,
     }}>
       {children}
     </TaskExecutionContext.Provider>

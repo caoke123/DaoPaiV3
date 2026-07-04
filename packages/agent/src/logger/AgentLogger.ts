@@ -21,6 +21,8 @@ export interface AgentLogEntry {
   message: string;
   timestamp: string;
   staffName?: string;
+  windowId?: string;
+  siteId?: string;
 }
 
 export interface AgentLoggerOptions {
@@ -61,13 +63,15 @@ export class AgentLogger {
     }
   }
 
-  private addToBuffer(level: AgentLogLevel, message: string, staffName?: string): void {
+  private addToBuffer(level: AgentLogLevel, message: string, meta?: { staffName?: string; windowId?: string; siteId?: string }): void {
     if (this.closed) return;
     this.buffer.push({
       level,
       message: message.substring(0, 2000),
       timestamp: new Date().toISOString(),
-      staffName,
+      staffName: meta?.staffName,
+      windowId: meta?.windowId,
+      siteId: meta?.siteId,
     });
 
     if (this.buffer.length >= this.maxBatchSize) {
@@ -75,20 +79,20 @@ export class AgentLogger {
     }
   }
 
-  info(message: string, meta?: { staffName?: string }): void {
-    this.addToBuffer('info', message, meta?.staffName);
+  info(message: string, meta?: { staffName?: string; windowId?: string; siteId?: string }): void {
+    this.addToBuffer('info', message, meta);
   }
 
-  success(message: string, meta?: { staffName?: string }): void {
-    this.addToBuffer('success', message, meta?.staffName);
+  success(message: string, meta?: { staffName?: string; windowId?: string; siteId?: string }): void {
+    this.addToBuffer('success', message, meta);
   }
 
-  warning(message: string, meta?: { staffName?: string }): void {
-    this.addToBuffer('warning', message, meta?.staffName);
+  warning(message: string, meta?: { staffName?: string; windowId?: string; siteId?: string }): void {
+    this.addToBuffer('warning', message, meta);
   }
 
-  error(message: string, meta?: { staffName?: string }): void {
-    this.addToBuffer('error', message, meta?.staffName);
+  error(message: string, meta?: { staffName?: string; windowId?: string; siteId?: string }): void {
+    this.addToBuffer('error', message, meta);
   }
 
   async flush(): Promise<void> {

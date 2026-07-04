@@ -42,12 +42,16 @@ export function loadConfig(): AgentConfig {
   }
 
   // 3. 校验必填字段
-  if (!raw.cloudBaseUrl || typeof raw.cloudBaseUrl !== 'string') {
-    console.error('错误：缺少 cloudBaseUrl，请检查 agent.json');
+  const cloudBaseUrl = typeof raw.cloudBaseUrl === 'string'
+    ? raw.cloudBaseUrl
+    : (typeof raw.cloudApiUrl === 'string' ? raw.cloudApiUrl : '');
+
+  if (!cloudBaseUrl) {
+    console.error('错误：缺少 cloudBaseUrl/cloudApiUrl，请检查 agent.json');
     process.exit(1);
   }
 
-  if (!raw.agentToken || typeof raw.agentToken !== 'string' || raw.agentToken === '请填入执行电脑授权码') {
+  if (!raw.agentToken || typeof raw.agentToken !== 'string' || raw.agentToken === '请填入执行电脑授权码' || raw.agentToken === 'agent_token_xxx') {
     console.error('错误：缺少执行电脑授权码，请检查 agent.json');
     console.error('请从 Cloud 管理后台获取执行电脑授权码，并填入 agent.json 的 agentToken 字段');
     process.exit(1);
@@ -58,7 +62,10 @@ export function loadConfig(): AgentConfig {
   const bnsy = loadBnsyConfig(raw.bnsy);
 
   const config: AgentConfig = {
-    cloudBaseUrl: raw.cloudBaseUrl as string,
+    cloudBaseUrl,
+    cloudApiUrl: typeof raw.cloudApiUrl === 'string' ? raw.cloudApiUrl : cloudBaseUrl,
+    tenantId: typeof raw.tenantId === 'string' ? raw.tenantId : undefined,
+    workstationId: typeof raw.workstationId === 'string' ? raw.workstationId : undefined,
     agentToken: raw.agentToken as string,
     workstationName: (raw.workstationName as string) || '未命名执行电脑',
     siteId: (raw.siteId as string) || null,
@@ -67,7 +74,7 @@ export function loadConfig(): AgentConfig {
     bnsy,
     logLevel: validateLogLevel(raw.logLevel),
     heartbeatIntervalMs: validatePositiveInt(raw.heartbeatIntervalMs, DEFAULTS.heartbeatIntervalMs!, '心跳间隔'),
-    taskPollIntervalMs: validatePositiveInt(raw.taskPollIntervalMs, DEFAULTS.taskPollIntervalMs!, '任务轮询间隔'),
+    taskPollIntervalMs: validatePositiveInt(raw.taskPollIntervalMs ?? raw.pollIntervalMs, DEFAULTS.taskPollIntervalMs!, '任务轮询间隔'),
   };
 
   return config;

@@ -1,6 +1,7 @@
 /**
  * useTaskLiveLogs — 统一实时日志 Hook
  * Phase 5-G-2: 统一 SSE 订阅 + PG 轮询兜底 + 日志合并去重 + 排序 + 状态管理
+ * Phase 5-G-7-2: 页面切换不丢日志，从日志 staffName 自动分组
  *
  * 职责：
  *   1. 订阅 SSE：/api/operations/:taskId/events（实时推送 TASK_LOG）
@@ -8,7 +9,8 @@
  *   3. 日志合并去重（优先 id，降级用 taskId+timestamp+level+message+staffName）
  *   4. 按 timestamp ASC 统一排序
  *   5. status 进入 done/failed/cancelled 后 final fetch 再停止轮询
- *   6. workers 为空时无 staffName 日志进入 globalLogs
+ *   6. 日志自动按 staffName 分组，workers 延迟到达也不丢日志
+ *   7. 同一 taskId 页面切换不重置日志（保留 final fetch 结果）
  *
  * 返回：allLogs / logsByWorker / globalLogs / status / isRunning
  */
@@ -69,6 +71,8 @@ export function useTaskLiveLogs(options: UseTaskLiveLogsOptions): UseTaskLiveLog
   const lastProgressRef = useRef<{ doneCount: number; failCount: number; status: string }>({
     doneCount: 0, failCount: 0, status: 'idle',
   });
+  // Phase 5-G-7-2: 跟踪 taskId 变化，同一 taskId 不清空日志
+  const prevTaskIdRef = useRef<string | null>(null);
 
   workersRef.current = workers;
 
@@ -145,17 +149,29 @@ export function useTaskLiveLogs(options: UseTaskLiveLogsOptions): UseTaskLiveLog
         clearTimeout(finalFetchTimerRef.current);
         finalFetchTimerRef.current = null;
       }
-      setStatus('idle');
-      setLogsMap(new Map());
-      logsMapRef.current = new Map();
+      // Phase 5-G-7-2: 仅当 taskId 从有变无（真正清空）时才重置
+      if (prevTaskIdRef.current !== null) {
+        setStatus('idle');
+        setLogsMap(new Map());
+        logsMapRef.current = new Map();
+      }
+      prevTaskIdRef.current = null;
       return;
     }
 
+    // Phase 5-G-7-2: 同一 taskId 不清空日志（支持页面切换恢复）
+    const isSameTask = prevTaskIdRef.current === taskId;
+    prevTaskIdRef.current = taskId;
+
     stoppedRef.current = false;
-    setLogsMap(new Map());
-    logsMapRef.current = new Map();
+
+    if (!isSameTask) {
+      setLogsMap(new Map());
+      logsMapRef.current = new Map();
+    }
     setStatus('pending');
 
+    // 从 PG 拉取已有日志
     getTaskLogsById(taskId, 500).then(async data => {
       if (data.logs.length > 0) {
         upsertLogs(data.logs);
@@ -168,6 +184,7 @@ export function useTaskLiveLogs(options: UseTaskLiveLogsOptions): UseTaskLiveLog
       upsertLogs(legacyLogs);
     });
 
+    // 获取任务状态
     getTaskStatus(taskId).then(s => {
       setStatus(s.status);
       if (s.status === 'done' || s.status === 'failed' || s.status === 'cancelled') {
@@ -270,6 +287,7 @@ export function useTaskLiveLogs(options: UseTaskLiveLogsOptions): UseTaskLiveLog
         clearTimeout(finalFetchTimerRef.current);
         finalFetchTimerRef.current = null;
       }
+      // Phase 5-G-7-2: 不清空 prevTaskIdRef，让下一次挂载判断 isSameTask
     };
   }, [taskId, enabled, pollIntervalMs, upsertLogs, handleFinished, stopPolling]);
 
@@ -279,17 +297,25 @@ export function useTaskLiveLogs(options: UseTaskLiveLogsOptions): UseTaskLiveLog
     return arr;
   }, [logsMap]);
 
+  // Phase 5-G-7-2: 从日志自动发现 staffName，workers prop 为空时也能分组
   const logsByWorker = useMemo(() => {
     const byWorker: Record<string, TaskLogEntry[]> = {};
     const currentWorkers = workersRef.current;
+
+    // 先初始化已知 workers
     for (const name of currentWorkers) {
       byWorker[name] = [];
     }
+
+    // 遍历所有日志，按 staffName 分组
     for (const log of allLogs) {
       const name = log.staffName;
-      if (name && byWorker[name]) {
-        byWorker[name].push(log);
+      if (!name) continue;
+      // workers 为空时自动创建分组
+      if (!byWorker[name]) {
+        byWorker[name] = [];
       }
+      byWorker[name].push(log);
     }
     return byWorker;
   }, [allLogs]);

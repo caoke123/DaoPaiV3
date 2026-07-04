@@ -111,6 +111,13 @@ class TaskLogService {
 
     await pg.insertTaskLogs(logEntriesForPg, context.tenantId);
 
+    // Phase 5-J-1: Agent 日志保存简洁日志（仅 source=agent 时输出，避免冗余）
+    if (context.source === 'agent') {
+      const firstStaff = normalizedEntries[0]?.staffName || '(空)';
+      const firstWindow = normalizedEntries[0]?.windowId || '(空)';
+      console.log(`[TaskLogService] Agent日志已保存，taskId=${taskId}, staffName=${firstStaff}, windowId=${firstWindow}, count=${normalizedEntries.length}`);
+    }
+
     for (const entry of normalizedEntries) {
       try {
         taskEventBus.emit({

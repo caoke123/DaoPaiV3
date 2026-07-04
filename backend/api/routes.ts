@@ -20,8 +20,9 @@ import { PgDatabase } from '../db/PgDatabase';
 import { getTenantId, getWorkstationId } from './middleware/requestContext';
 import { taskLogService } from '../services/TaskLogService';
 // Phase D-1: 统一任务执行引擎
-import { AssignmentEngine, ArrivalHandler, DispatchHandler, IntegratedHandler, SignHandler, InitWindowHandler, type Assignment } from '../modules/assignment-engine';
-// 类型仅用于请求体校验（业务执行已交给 Engine）
+// Phase K-R1: 四业务 Handler 已归档到 backend/archive/cloud-engine/handlers/，主代码不再 import
+// Phase K-R1: scheduleLocalEngineRun 已删除，TaskEngineRunner / isPlaywrightMode 不再被 routes.ts 使用
+import { AssignmentEngine, InitWindowHandler, type Assignment } from '../modules/assignment-engine';
 
 // ── 任务提交速率保护（保护 EasyBR 稳定性）────────────────
 // 简单令牌桶：每秒最多 1 个任务提交请求
@@ -947,6 +948,11 @@ async function validateAssignmentsBelongToSite(
   return { ok: true };
 }
 
+// Phase K-R1: scheduleLocalEngineRun 已删除。
+// 四业务（arrival/dispatch/sign/integrated）只能由 Local Agent 执行，
+// backend route 只创建 pending task，不再调用 Cloud 引擎。
+// 任何尝试恢复 Cloud 执行四业务的行为都会被 TaskEngineRunner.assertNotAgentOnlyBusiness 拦截。
+
 /** POST /api/operations/arrive — 提交到件任务
  *
  * 支持两种请求体（优先 assignments，向后兼容 waybillNos）：
@@ -1056,7 +1062,11 @@ router.post('/api/operations/arrive', async (req: Request, res: Response) => {
     source: 'api',
   }).catch(e => console.warn('[PG] append start log arrival failed:', (e as Error).message));
 
-  // 3. 立即返回（任务由 Agent 从 PG 拉取执行，不再由 AssignmentEngine 直接执行）
+  // Phase K-R1: arrival 只创建 pending task，等待 Local Agent pull 执行。
+  // 不再调用 scheduleLocalEngineRun；不再判断 AGENT_LOCAL_ARRIVAL。
+  // Cloud 引擎对 arrival 已被 TaskEngineRunner.assertNotAgentOnlyBusiness 硬拒绝。
+
+  // 3. 立即返回，任务保持 pending 状态
   res.json({ taskId, status: 'pending' });
 });
 
@@ -1102,22 +1112,19 @@ router.post('/api/operations/dispatch', async (req: Request, res: Response) => {
     return res.status(400).json({ error: `员工 "${names}" 不属于当前网点，请切换网点后重新选择员工` });
   }
 
-  // Phase 2-B: 指定模式校验
+  // Phase 2-B / K-2C: 指定模式校验（支持多 assignment designated 模式）
+  //   K-2C 已在 Agent 端 DispatchExecutor 支持多 assignment 顺序执行，
+  //   此处移除单 assignment 限制，改为循环校验每个 assignment 的目标派件员。
   if (executionMode === 'designated') {
-    if (assignments.length !== 1) {
-      return res.status(400).json({ error: '指定模式仅支持单个执行窗口' });
-    }
-    const a = assignments[0];
-    if (!a.targetCourierName) {
-      return res.status(400).json({ error: '指定模式必须选择目标派件员' });
-    }
-    if (!a.targetCourierAccount) {
-      return res.status(400).json({ error: '指定模式目标派件员账号不能为空' });
-    }
-    // 校验目标派件员归属
-    const targetCheck = await validateAssignmentsBelongToSite(site, [{ staffName: a.targetCourierName, waybillNos: [] } as Assignment]);
-    if (!targetCheck.ok) {
-      return res.status(400).json({ error: '目标派件员不属于当前网点' });
+    for (const a of assignments) {
+      if (!a.targetCourierName) {
+        return res.status(400).json({ error: '指定模式每个 assignment 必须选择目标派件员' });
+      }
+      // 校验目标派件员归属
+      const targetCheck = await validateAssignmentsBelongToSite(site, [{ staffName: a.targetCourierName, waybillNos: [] } as Assignment]);
+      if (!targetCheck.ok) {
+        return res.status(400).json({ error: `目标派件员 "${a.targetCourierName}" 不属于当前网点` });
+      }
     }
   }
 
@@ -1177,7 +1184,14 @@ router.post('/api/operations/dispatch', async (req: Request, res: Response) => {
     source: 'api',
   }).catch(e => console.warn('[PG] append start log dispatch failed:', (e as Error).message));
 
-  // 3. 立即返回（任务由 Agent 从 PG 拉取执行，不再由 AssignmentEngine 直接执行）
+  // Phase K-R1: dispatch 只创建 pending task，等待 Local Agent pull 执行。
+  // 删除原 K-2E-R2 直接调用 Cloud 引擎的逻辑：
+  //   - 不再调用 scheduleLocalEngineRun
+  //   - 不再由 Cloud 引擎使用准备态员工窗口执行浏览器动作
+  // Cloud 引擎对 dispatch 已被 TaskEngineRunner.assertNotAgentOnlyBusiness 硬拒绝。
+  // Agent 不在线时任务保持 pending，绝不允许 Cloud fallback。
+
+  // 3. 立即返回，任务保持 pending 状态
   res.json({ taskId, status: 'pending' });
 });
 
@@ -1223,22 +1237,20 @@ router.post('/api/operations/integrated', async (req: Request, res: Response) =>
     return res.status(400).json({ error: `员工 "${names}" 不属于当前网点，请切换网点后重新选择员工` });
   }
 
-  // Phase 2-B: 指定模式校验
+  // Phase 2-B / K-2D: 指定模式校验（支持 Integrated 多 assignment 顺序执行）
   if (executionMode === 'designated') {
-    if (assignments.length !== 1) {
-      return res.status(400).json({ error: '指定模式仅支持单个执行窗口' });
-    }
-    const a = assignments[0];
-    if (!a.targetCourierName) {
-      return res.status(400).json({ error: '指定模式必须选择目标派件员' });
-    }
-    if (!a.targetCourierAccount) {
-      return res.status(400).json({ error: '指定模式目标派件员账号不能为空' });
-    }
-    // 校验目标派件员归属
-    const targetCheck = await validateAssignmentsBelongToSite(site, [{ staffName: a.targetCourierName, waybillNos: [] } as Assignment]);
-    if (!targetCheck.ok) {
-      return res.status(400).json({ error: '目标派件员不属于当前网点' });
+    for (const a of assignments) {
+      if (!a.targetCourierName) {
+        return res.status(400).json({ error: '指定模式每个 assignment 必须选择目标派件员' });
+      }
+      if (!a.targetCourierAccount) {
+        return res.status(400).json({ error: '指定模式目标派件员账号不能为空' });
+      }
+      // 校验目标派件员归属
+      const targetCheck = await validateAssignmentsBelongToSite(site, [{ staffName: a.targetCourierName, waybillNos: [] } as Assignment]);
+      if (!targetCheck.ok) {
+        return res.status(400).json({ error: '目标派件员不属于当前网点' });
+      }
     }
   }
 
@@ -1298,7 +1310,11 @@ router.post('/api/operations/integrated', async (req: Request, res: Response) =>
     source: 'api',
   }).catch(e => console.warn('[PG] append start log integrated failed:', (e as Error).message));
 
-  // 3. 立即返回（任务由 Agent 从 PG 拉取执行，不再由 AssignmentEngine 直接执行）
+  // Phase K-R1: integrated 只创建 pending task，等待 Local Agent pull 执行。
+  // 不再调用 scheduleLocalEngineRun；不再判断 AGENT_LOCAL_INTEGRATED。
+  // Cloud 引擎对 integrated 已被 TaskEngineRunner.assertNotAgentOnlyBusiness 硬拒绝。
+
+  // 3. 立即返回，任务保持 pending 状态
   res.json({ taskId, status: 'pending' });
 });
 
@@ -1344,22 +1360,20 @@ router.post('/api/operations/sign', async (req: Request, res: Response) => {
     return res.status(400).json({ error: `员工 "${names}" 不属于当前网点，请切换网点后重新选择员工` });
   }
 
-  // Phase 2-B: 指定模式校验
+  // Phase 2-B / K-2D: 指定模式校验（支持 Sign 多 assignment 顺序执行）
   if (executionMode === 'designated') {
-    if (assignments.length !== 1) {
-      return res.status(400).json({ error: '指定模式仅支持单个执行窗口' });
-    }
-    const a = assignments[0];
-    if (!a.targetCourierName) {
-      return res.status(400).json({ error: '指定模式必须选择目标派件员' });
-    }
-    if (!a.targetCourierAccount) {
-      return res.status(400).json({ error: '指定模式目标派件员账号不能为空' });
-    }
-    // 校验目标派件员归属
-    const targetCheck = await validateAssignmentsBelongToSite(site, [{ staffName: a.targetCourierName, waybillNos: [] } as Assignment]);
-    if (!targetCheck.ok) {
-      return res.status(400).json({ error: '目标派件员不属于当前网点' });
+    for (const a of assignments) {
+      if (!a.targetCourierName) {
+        return res.status(400).json({ error: '指定模式每个 assignment 必须选择目标派件员' });
+      }
+      if (!a.targetCourierAccount) {
+        return res.status(400).json({ error: '指定模式目标派件员账号不能为空' });
+      }
+      // 校验目标派件员归属
+      const targetCheck = await validateAssignmentsBelongToSite(site, [{ staffName: a.targetCourierName, waybillNos: [] } as Assignment]);
+      if (!targetCheck.ok) {
+        return res.status(400).json({ error: '目标派件员不属于当前网点' });
+      }
     }
   }
 
@@ -1425,7 +1439,11 @@ router.post('/api/operations/sign', async (req: Request, res: Response) => {
     source: 'api',
   }).catch(e => console.warn('[PG] append start log sign failed:', (e as Error).message));
 
-  // 3. 立即返回（任务由 Agent 从 PG 拉取执行，不再由 AssignmentEngine 直接执行）
+  // Phase K-R1: sign 只创建 pending task，等待 Local Agent pull 执行。
+  // 不再调用 scheduleLocalEngineRun；不再判断 AGENT_LOCAL_SIGN。
+  // Cloud 引擎对 sign 已被 TaskEngineRunner.assertNotAgentOnlyBusiness 硬拒绝。
+
+  // 3. 立即返回，任务保持 pending 状态
   res.json({ taskId, status: 'pending' });
 });
 
@@ -1653,6 +1671,64 @@ router.get('/api/operations/:taskId/events', (req: Request, res: Response) => {
 
 // ── 任务详情 API（基于 PgDatabase）─────────────────────
 
+/** GET /api/tasks/:id — 查询任务完整详情（含 inputData、assignments） */
+router.get('/api/tasks/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const tenantId = getTenantId(req);
+    const pgDb = PgDatabase.getInstance();
+
+    const task = await pgDb.getTaskById(tenantId, id);
+    if (!task) {
+      return res.status(404).json({ error: '任务不存在' });
+    }
+
+    // 解析 inputData 中的 assignments
+    const rawInput = task.inputData as Record<string, unknown> | undefined;
+    let assignments: Array<{ staffName: string; count?: number }> = [];
+    if (rawInput?.assignments && Array.isArray(rawInput.assignments)) {
+      assignments = (rawInput.assignments as Array<Record<string, unknown>>).map(a => ({
+        staffName: String(a.staffName || a.name || a.staff_name || ''),
+        count: typeof a.count === 'number'
+          ? a.count
+          : (Array.isArray(a.waybillNos) ? a.waybillNos.length : undefined),
+      }));
+    }
+
+    // 如果 inputData 中没有 assignments，从 task_staff 表获取
+    if (assignments.length === 0) {
+      try {
+        const staffSummary = await pgDb.getTaskStaffSummary(tenantId, id);
+        assignments = staffSummary.map(s => ({
+          staffName: s.staffName,
+          count: s.total || 0,
+        }));
+      } catch {
+        // staff summary 获取失败不影响返回
+      }
+    }
+
+    res.json({
+      taskId: task.id,
+      type: task.type,
+      site: task.site,
+      siteName: task.siteName,
+      status: task.status,
+      totalCount: task.totalCount,
+      doneCount: task.doneCount,
+      failCount: task.failCount,
+      createdAt: task.createdAt,
+      finishedAt: task.finishedAt,
+      updatedAt: task.finishedAt || task.createdAt,
+      inputData: rawInput || null,
+      assignments,
+    });
+  } catch (e) {
+    console.error('[GET /api/tasks/:id] 失败:', (e as Error).message);
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
+
 /** GET /api/tasks/:id/status — 查询任务最新状态（从 PG，供前端实时轮询） */
 router.get('/api/tasks/:id/status', async (req: Request, res: Response) => {
   try {
@@ -1754,6 +1830,69 @@ router.post('/api/tasks/cleanup', async (req: Request, res: Response) => {
   } catch (e) {
     console.error('[POST /api/tasks/cleanup] 失败:', (e as Error).message);
     res.status(500).json({ error: (e as Error).message });
+  }
+});
+
+/** POST /api/admin/tasks/reset — Phase K-3A-2-Prep: 清空所有任务数据（E2E 测试前重置） */
+router.post('/api/admin/tasks/reset', async (req: Request, res: Response) => {
+  try {
+    // 1. 环境安全检查：生产环境禁止使用
+    const nodeEnv = process.env.NODE_ENV || 'development';
+    const enableReset = process.env.ENABLE_TASK_RESET === 'true';
+    if (nodeEnv === 'production' && !enableReset) {
+      return res.status(403).json({
+        ok: false,
+        code: 'FORBIDDEN_IN_PRODUCTION',
+        message: '当前环境不允许清理任务数据',
+        hint: '若确实需要在生产环境执行，请设置 ENABLE_TASK_RESET=true',
+      });
+    }
+
+    // 2. 权限检查：仅管理员可操作
+    const principal = (req as any).principal;
+    if (!principal || principal.type !== 'user') {
+      return res.status(401).json({
+        ok: false,
+        code: 'UNAUTHORIZED',
+        message: '需要登录后才能执行此操作',
+      });
+    }
+    const role = principal.role;
+    if (role !== 'super_admin' && role !== 'tenant_admin') {
+      return res.status(403).json({
+        ok: false,
+        code: 'FORBIDDEN',
+        message: '仅管理员可执行任务重置操作',
+      });
+    }
+
+    // 3. 确认码校验
+    const { confirm, scope } = req.body || {};
+    if (confirm !== 'RESET_TASKS') {
+      return res.status(400).json({
+        ok: false,
+        code: 'CONFIRM_REQUIRED',
+        message: '请确认操作：confirm 必须为 "RESET_TASKS"',
+      });
+    }
+
+    // 4. 执行清理
+    const pgDb = PgDatabase.getInstance();
+    const tenantId = getTenantId(req);
+    const result = await pgDb.resetAllTasks(tenantId);
+
+    res.json({
+      ok: true,
+      deleted: {
+        tasks: result.deletedTasks,
+        task_logs: result.deletedLogs,
+        waybill_results: result.deletedWaybills,
+      },
+      message: '任务数据已清理',
+    });
+  } catch (e) {
+    console.error('[POST /api/admin/tasks/reset] 失败:', (e as Error).message);
+    res.status(500).json({ ok: false, code: 'UNKNOWN_ERROR', message: (e as Error).message });
   }
 });
 

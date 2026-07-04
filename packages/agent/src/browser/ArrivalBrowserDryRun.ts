@@ -23,8 +23,13 @@ import { stableFillTextarea, verifyInputValue, stableClick } from './StablePageA
 import {
   ARRIVAL_BATCH_SELECTORS,
   DEFAULT_PREV_STATION,
-  ARRIVAL_PAGE_ROUTE,
 } from './arrivalSelectors';
+import {
+  navigateToBusinessPageMenuFirst,
+  afterPageChangedCleanup,
+  type AgentRuntimeLogFn,
+  type AgentRuntimeMeta,
+} from './AgentBusinessRuntime';
 
 export interface ArrivalBrowserDryRunInput {
   siteId: string;
@@ -34,6 +39,10 @@ export interface ArrivalBrowserDryRunInput {
     prevStation?: string;
     batchSize?: number;
   };
+  /** Phase K-2E: Agent 运行时日志函数（可选） */
+  log?: AgentRuntimeLogFn;
+  /** Phase K-2E: Agent 运行时元数据（可选） */
+  meta?: AgentRuntimeMeta;
 }
 
 export interface ArrivalBrowserDryRunResult {
@@ -51,8 +60,7 @@ export interface ArrivalBrowserDryRunResult {
   validationLogs: string[];
 }
 
-// 到件扫描页面 URL（来源：PageStateManager.ts:18 ARRIVAL_PAGE_ROUTE）
-const ARRIVAL_PAGE_URL = `https://bnsy.benniaosuyun.com${ARRIVAL_PAGE_ROUTE}`;
+// 到件扫描页面 URL 兜底来源：PageStateManager.ts:18 ARRIVAL_PAGE_ROUTE（由 AgentBusinessRuntime 内部使用）
 
 // 禁止点击的按钮关键词（用于 assertNotFinalSubmit 安全保护）
 const FORBIDDEN_BUTTON_KEYWORDS = [
@@ -74,71 +82,6 @@ function assertNotFinalSubmit(text: string): void {
 }
 
 /**
- * 清理页面上的阻塞弹窗（如余额不足提醒、公告等）
- * 只点击"取消"、"关闭"、"知道了"等安全按钮，不点击业务按钮
- *
- * 来源：旧流程 PopupManager，Agent 侧简化实现
- */
-async function cleanPagePopups(page: Page): Promise<void> {
-  try {
-    const result = await page.evaluate(() => {
-      let cleaned = 0;
-      const actions: string[] = [];
-
-      // 查找所有可见的 el-dialog__wrapper
-      const wrappers = document.querySelectorAll('.el-dialog__wrapper');
-      for (const wrapper of wrappers) {
-        const ws = window.getComputedStyle(wrapper as HTMLElement);
-        if (ws.display === 'none') continue;
-
-        // 查找关闭/取消按钮
-        const btns = wrapper.querySelectorAll('button');
-        for (const btn of btns) {
-          const text = (btn.textContent || '').replace(/\s+/g, '');
-          // 只点击安全的关闭按钮
-          if (text === '取消' || text === '关闭' || text === '知道了' || text === '确定' || text.includes('取消') || text.includes('关闭')) {
-            // 安全检查：不点击包含禁止关键词的按钮
-            if (text.includes('批量到件') || text.includes('确认到件') || text.includes('提交')) {
-              continue;
-            }
-            (btn as HTMLElement).click();
-            cleaned++;
-            actions.push(`点击了"${text}"按钮`);
-            break;
-          }
-        }
-      }
-
-      // 也清理 el-message-box
-      const msgBoxes = document.querySelectorAll('.el-message-box__wrapper');
-      for (const box of msgBoxes) {
-        const ws = window.getComputedStyle(box as HTMLElement);
-        if (ws.display === 'none') continue;
-        const btns = box.querySelectorAll('button');
-        for (const btn of btns) {
-          const text = (btn.textContent || '').replace(/\s+/g, '');
-          if (text === '取消' || text === '关闭' || text === '知道了' || text.includes('取消') || text.includes('关闭')) {
-            (btn as HTMLElement).click();
-            cleaned++;
-            actions.push(`点击了"${text}"按钮`);
-            break;
-          }
-        }
-      }
-
-      return { cleaned, actions };
-    });
-
-    if (result.cleaned > 0) {
-      console.log(`  [DRY-RUN] 弹窗清理: ${result.actions.join('; ')}`);
-      await page.waitForTimeout(1000);
-    }
-  } catch {
-    // 忽略清理失败
-  }
-}
-
-/**
  * 执行到件扫描浏览器 DRY-RUN
  *
  * 选择器和交互流程严格遵循旧代码：
@@ -152,7 +95,7 @@ export async function runArrivalBrowserDryRun(
   input: ArrivalBrowserDryRunInput,
 ): Promise<ArrivalBrowserDryRunResult> {
   const warnings: string[] = [];
-  const { waybills, options } = input;
+  const { waybills, options, log, meta } = input;
   const prevStation = options?.prevStation || DEFAULT_PREV_STATION;
 
   const result: ArrivalBrowserDryRunResult = {
@@ -170,77 +113,43 @@ export async function runArrivalBrowserDryRun(
   };
 
   // 1. 确保 Dashboard P0 READY
-  console.log('  [DRY-RUN] 检测 Dashboard P0...');
+  log?.('info', '[Agent][Arrival] 检测 Dashboard P0...', meta);
   const p0 = await detectBnsyDashboardP0(page);
   if (p0.status !== 'READY') {
     result.message = `Dashboard P0 不是 READY，拒绝执行 DRY-RUN（状态: ${p0.status}）`;
     warnings.push(`P0 状态: ${p0.status} - ${p0.message}`);
+    log?.('error', `[Agent][Arrival] ${result.message}`, meta);
     return result;
   }
-  console.log('  [DRY-RUN] Dashboard P0 = READY');
+  log?.('info', '[Agent][Arrival] Dashboard P0 = READY', meta);
 
-  // 2. 进入到件扫描页面
-  console.log(`  [DRY-RUN] 导航到到件扫描页面: ${ARRIVAL_PAGE_URL}`);
-  console.log(`  [DRY-RUN] 到件页面 URL 来源: PageStateManager.ts:18 ARRIVAL_PAGE_ROUTE`);
-  try {
-    // 先确保在 dashboard，等待 SPA 完全初始化
-    const dashboardUrl = 'https://bnsy.benniaosuyun.com/dashboard';
-    if (!page.url().includes('/dashboard')) {
-      await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-      await page.waitForTimeout(3000);
-    }
-
-    // 导航到到件扫描页面
-    await page.goto(ARRIVAL_PAGE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-    await page.waitForTimeout(3000);
-
-    // 检查是否被重定向到 dashboard
-    let currentUrl = page.url();
-    if (currentUrl.includes('/dashboard')) {
-      console.log(`  [DRY-RUN] 直接导航被重定向，尝试 Vue Router...`);
-      // 通过 Vue Router 导航
-      await page.evaluate((url) => {
-        const app = document.querySelector('#app') as any;
-        if (app && app.__vue__ && app.__vue__.$router) {
-          app.__vue__.$router.push(url.replace('https://bnsy.benniaosuyun.com', ''));
-        } else {
-          window.location.href = url;
-        }
-      }, ARRIVAL_PAGE_URL);
-      await page.waitForTimeout(3000);
-    }
-
-    currentUrl = page.url();
-    console.log(`  [DRY-RUN] 当前 URL: ${currentUrl}`);
-  } catch (err) {
-    result.message = `到件页面打开失败: ${(err as Error).message}`;
+  // 2. 进入到件扫描页面 —— Phase K-2E: 菜单优先导航（sidebar_first → sidebar_retry → url_fallback）
+  log?.('info', '[Agent][Arrival] 菜单优先导航到到件扫描页面', meta);
+  const navResult = await navigateToBusinessPageMenuFirst(page, 'arrival', log, meta);
+  if (!navResult.success) {
+    result.message = `到件页面导航失败: ${navResult.message}`;
+    warnings.push(`导航方法: ${navResult.method}`);
+    log?.('error', `[Agent][Arrival] ${result.message}`, meta);
     return result;
   }
+  log?.('info', `[Agent][Arrival] 导航成功，方法: ${navResult.method}`, meta);
+  result.validationLogs.push(`导航方法: ${navResult.method}`);
 
   result.pageUrl = page.url();
   try {
     result.title = await page.title();
   } catch {
     result.title = '(无法获取标题)';
-    console.log(`  [DRY-RUN] page.title() 失败，可能是页面正在重载，继续执行`);
+    log?.('warning', '[Agent][Arrival] page.title() 失败，页面可能正在重载', meta);
   }
-  console.log(`  [DRY-RUN] 页面已打开: ${result.pageUrl}`);
-  console.log(`  [DRY-RUN] 页面标题: ${result.title}`);
-
-  // 2b. 清理页面上的阻塞弹窗（如余额不足提醒）
-  await cleanPagePopups(page);
+  log?.('info', `[Agent][Arrival] 页面已打开: ${result.pageUrl}`, meta);
 
   // 3. 检测到件页面元素（查询前）
-  console.log('  [DRY-RUN] 检测到件页面元素（查询前）...');
+  log?.('info', '[Agent][Arrival] 检测到件页面元素（查询前）...', meta);
   const detectBefore = await detectArrivalPage(page);
   result.detectBefore = detectBefore;
 
-  console.log(`  [DRY-RUN] 是否到件页面: ${detectBefore.isArrivalPage}`);
-  console.log(`  [DRY-RUN] 运单输入框: ${detectBefore.hasWaybillInput ? '已检测到' : '未检测到'}`);
-  console.log(`  [DRY-RUN] 上一站输入框: ${detectBefore.hasPrevStationInput ? '已检测到' : '未检测到'}`);
-  console.log(`  [DRY-RUN] 查询按钮: ${detectBefore.hasSearchButton ? '已检测到' : '未检测到'}`);
-  console.log(`  [DRY-RUN] 结果表格: ${detectBefore.hasTable ? '已检测到' : '未检测到'}`);
-  console.log(`  [DRY-RUN] 最终提交按钮: ${detectBefore.hasFinalSubmitButton ? '已检测到（不点击）' : '未检测到'}`);
+  log?.('info', `[Agent][Arrival] 页面检测: isArrivalPage=${detectBefore.isArrivalPage} waybillInput=${detectBefore.hasWaybillInput} prevStation=${detectBefore.hasPrevStationInput} queryBtn=${detectBefore.hasSearchButton} table=${detectBefore.hasTable}`, meta);
 
   if (!detectBefore.isArrivalPage) {
     warnings.push('当前页面不是到件扫描页面');
@@ -253,116 +162,131 @@ export async function runArrivalBrowserDryRun(
   }
 
   // ────────────────────────────────────────────────────────────
-  // 4. 稳定输入测试运单
+  // 4. 稳定填写上一站（优先于运单输入）
+  //    选择器来源：
+  //      - prevStationInput: arrivalScanBatch.selectors.ts:46-47
+  //      - getPrevStationOption(text): arrivalScanBatch.selectors.ts (动态)
+  //    交互顺序来源：ArriveScanBatch.ts:178-200 (Step 7)
+  //    Phase I-4-Arrival-Fix: 接入 log/meta + 动态选择器 + 遍历候选项点击
+  // ────────────────────────────────────────────────────────────
+  let prevStationSuccess = false;
+  if (detectBefore.hasPrevStationInput && prevStation) {
+    log?.('info', `[Agent][Arrival] 上一站填写开始: ${prevStation}`, meta);
+    result.validationLogs.push(`上一站填写开始：${prevStation}`);
+    try {
+      prevStationSuccess = await stableFillPrevStation(page, prevStation, log, meta);
+      if (prevStationSuccess) {
+        log?.('success', `[Agent][Arrival] 目标上一站=${prevStation}，匹配=true`, meta);
+        result.validationLogs.push(`上一站填写校验通过：${prevStation}`);
+      } else {
+        log?.('warning', `[Agent][Arrival] 目标上一站=${prevStation}，匹配=false`, meta);
+      }
+    } catch (err) {
+      log?.('error', `[Agent][Arrival] 上一站填写异常: ${(err as Error).message}`, meta);
+    }
+
+    if (!prevStationSuccess) {
+      warnings.push(`上一站填写失败：未确认选中"${prevStation}"`);
+      // 上一站失败：不填单号，不查询，直接返回
+      result.message = `上一站填写失败：未确认选中"${prevStation}"，已停止执行`;
+      result.success = false;
+      result.validationLogs.push(`上一站填写失败，已停止执行，未点击查询`);
+      log?.('error', `[Agent][Arrival] ${result.message}`, meta);
+      return result;
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // 5. 稳定输入测试运单（上一站校验通过后才执行）
   //    选择器来源：arrivalScanBatch.selectors.ts:42-43 waybillTextarea
   //    旧代码使用位置：ArriveScanBatch.ts:158, 162-176
   // ────────────────────────────────────────────────────────────
   let waybillInputSuccess = false;
   if (detectBefore.hasWaybillInput && waybills.length > 0) {
-    console.log(`  [DRY-RUN] 稳定输入测试运单 (${waybills.length} 条)...`);
-    console.log(`  [DRY-RUN] 运单 textarea 选择器来源: arrivalScanBatch.selectors.ts:42-43`);
+    // 数量上限校验
+    if (waybills.length > 200) {
+      result.message = `运单数量超过上限：${waybills.length} > 200，拒绝执行`;
+      result.success = false;
+      result.validationLogs.push(result.message);
+      warnings.push(result.message);
+      log?.('error', `[Agent][Arrival] ${result.message}`, meta);
+      return result;
+    }
+
+    log?.('info', `[Agent][Arrival] 稳定输入测试运单 (${waybills.length} 条)...`, meta);
     try {
       const textareaLocator = page.locator(ARRIVAL_BATCH_SELECTORS.waybillTextarea).first();
       if (await textareaLocator.isVisible({ timeout: 5000 })) {
         await stableFillTextarea(textareaLocator, waybills.join('\n'), { maxRetries: 3 });
         result.inputCount = waybills.length;
+
+        // 行数反验：textarea.value 拆分行数 === waybills.length
+        const actualLines = await textareaLocator.inputValue().then(v =>
+          v.split('\n').filter(line => line.trim().length > 0).length
+        ).catch(() => 0);
+        if (actualLines !== waybills.length) {
+          log?.('warning', `[Agent][Arrival] 任务单号数=${waybills.length}，textarea实际行数=${actualLines}`, meta);
+          warnings.push(`运单行数不匹配：预期${waybills.length}行，实际${actualLines}行`);
+          result.message = `运单行数校验失败：预期${waybills.length}行，实际${actualLines}行`;
+          result.success = false;
+          return result;
+        }
         waybillInputSuccess = true;
-        console.log(`  [DRY-RUN] 运单输入校验通过：${waybills.length} 条`);
+        log?.('info', `[Agent][Arrival] 运单输入校验通过: ${waybills.length} 条`, meta);
         result.validationLogs.push(`运单输入校验通过：${waybills.length} 条`);
       } else {
         warnings.push('运单输入框不可见');
-        console.log(`  [DRY-RUN] 运单输入校验失败：textarea 不可见`);
+        log?.('warning', '[Agent][Arrival] 运单输入校验失败：textarea 不可见', meta);
       }
     } catch (err) {
       warnings.push(`运单输入失败: ${(err as Error).message}`);
-      console.log(`  [DRY-RUN] 运单输入异常: ${(err as Error).message}`);
-    }
-  }
-
-  // ────────────────────────────────────────────────────────────
-  // 5. 稳定填写上一站
-  //    选择器来源：
-  //      - prevStationInput: arrivalScanBatch.selectors.ts:46-47
-  //      - prevStationOption: arrivalScanBatch.selectors.ts:49-50
-  //    交互顺序来源：ArriveScanBatch.ts:178-200 (Step 7)
-  //    真实交互：
-  //      1. page.click(prevStationInput)
-  //      2. waitForTimeout(800)
-  //      3. locator(prevStationOption).count()
-  //      4. 若 count > 0：prevOptionLoc.first().click() + waitForTimeout(500)
-  //      5. 否则兜底：page.fill(prevStationInput, DEFAULT_PREV_STATION) + keyboard.press('Enter')
-  // ────────────────────────────────────────────────────────────
-  let prevStationSuccess = false;
-  if (detectBefore.hasPrevStationInput && prevStation) {
-    console.log(`  [DRY-RUN] 上一站填写开始：${prevStation}`);
-    console.log(`  [DRY-RUN] 上一站 input 选择器来源: arrivalScanBatch.selectors.ts:46-47`);
-    console.log(`  [DRY-RUN] 上一站 option 选择器来源: arrivalScanBatch.selectors.ts:49-50`);
-    console.log(`  [DRY-RUN] 上一站交互方式: 点击 input → 等 800ms → 选择下拉候选 → 校验 value`);
-    result.validationLogs.push(`上一站填写开始：${prevStation}`);
-    try {
-      prevStationSuccess = await stableFillPrevStation(page, prevStation);
-      if (prevStationSuccess) {
-        console.log(`  [DRY-RUN] 上一站填写校验通过：${prevStation}`);
-        result.validationLogs.push(`上一站填写校验通过：${prevStation}`);
-      } else {
-        console.log(`  [DRY-RUN] 上一站填写失败：未确认选中"${prevStation}"`);
-      }
-    } catch (err) {
-      console.log(`  [DRY-RUN] 上一站填写异常: ${(err as Error).message}`);
-    }
-
-    if (!prevStationSuccess) {
-      warnings.push(`上一站填写失败：未确认选中"${prevStation}"`);
+      log?.('error', `[Agent][Arrival] 运单输入异常: ${(err as Error).message}`, meta);
     }
   }
 
   // ────────────────────────────────────────────────────────────
   // 6. 查询前置校验：必须全部通过才能点击查询
-  //    失败任意一项 → 任务 failed，不点击查询
   // ────────────────────────────────────────────────────────────
-  console.log('  [DRY-RUN] 查询前置校验开始...');
+  log?.('info', '[Agent][Arrival] 查询前置校验开始...', meta);
   const preQueryChecks = {
-    waybill: waybillInputSuccess,
     prevStation: prevStationSuccess,
+    waybill: waybillInputSuccess,
     searchButton: detectBefore.hasSearchButton,
   };
-  console.log(`  [DRY-RUN] 校验结果：运单=${preQueryChecks.waybill}，上一站=${preQueryChecks.prevStation}，查询按钮=${preQueryChecks.searchButton}`);
+  log?.('info', `[Agent][Arrival] 校验结果：上一站=${preQueryChecks.prevStation}，运单=${preQueryChecks.waybill}，查询按钮=${preQueryChecks.searchButton}`, meta);
 
-  if (!preQueryChecks.waybill || !preQueryChecks.prevStation || !preQueryChecks.searchButton) {
+  if (!preQueryChecks.prevStation || !preQueryChecks.waybill || !preQueryChecks.searchButton) {
     const failedParts: string[] = [];
-    if (!preQueryChecks.waybill) failedParts.push('运单输入');
     if (!preQueryChecks.prevStation) failedParts.push('上一站填写');
+    if (!preQueryChecks.waybill) failedParts.push('运单输入');
     if (!preQueryChecks.searchButton) failedParts.push('查询按钮检测');
     result.message = `查询前置校验失败：${failedParts.join('、')}未通过，已停止执行，未点击查询`;
     result.success = false;
-    result.validationLogs.push(`上一站填写失败，已停止执行，未点击查询`);
-    console.log(`  [DRY-RUN] ${result.message}`);
+    result.validationLogs.push(`查询前置校验失败，已停止执行，未点击查询`);
+    log?.('error', `[Agent][Arrival] ${result.message}`, meta);
     return result;
   }
-  console.log('  [DRY-RUN] 查询前置校验通过');
+  log?.('info', '[Agent][Arrival] 查询前置校验通过', meta);
   result.validationLogs.push('查询前置校验通过');
 
   // ────────────────────────────────────────────────────────────
   // 7. 点击查询按钮
-  //    选择器来源：arrivalScanBatch.selectors.ts:53-54 queryBtn
-  //    旧代码使用位置：ArriveScanBatch.ts:206
   //    安全保护：点击前再次 assertNotFinalSubmit
   // ────────────────────────────────────────────────────────────
-  await cleanPagePopups(page);
-  console.log('  [DRY-RUN] 点击查询按钮...');
-  console.log(`  [DRY-RUN] 查询按钮选择器来源: arrivalScanBatch.selectors.ts:53-54`);
+  await afterPageChangedCleanup(page, log, meta, 'arrival-before-query');
+  log?.('info', '[Agent][Arrival] 点击查询按钮...', meta);
   try {
     const queryBtn = page.locator(ARRIVAL_BATCH_SELECTORS.queryBtn).first();
 
     // 安全保护：先读取按钮文本，确认不是最终提交
     const btnText = (await queryBtn.textContent() || '').trim();
     assertNotFinalSubmit(btnText);
-    console.log(`  [DRY-RUN] 查询按钮文本: "${btnText}"（安全检查通过）`);
+    log?.('info', `[Agent][Arrival] 查询按钮文本: "${btnText}"（安全检查通过）`, meta);
 
     // 等待可见并点击
     await stableClick(queryBtn, { timeoutMs: 5000 });
     result.queried = true;
-    console.log(`  [DRY-RUN] 已点击查询按钮`);
+    log?.('info', '[Agent][Arrival] 已点击查询按钮', meta);
 
     // 等待查询结果（旧代码 ArriveScanBatch.ts:207 waitForTimeout(3000)）
     await page.waitForTimeout(3000);
@@ -373,27 +297,27 @@ export async function runArrivalBrowserDryRun(
         timeout: 8000,
         state: 'visible',
       });
-      console.log(`  [DRY-RUN] 查询结果表格行已加载`);
+      log?.('info', '[Agent][Arrival] 查询结果表格行已加载', meta);
     } catch {
       warnings.push('查询后表格行未加载（可能运单号是测试号，无数据属正常）');
-      console.log(`  [DRY-RUN] 查询结果表格行未加载（测试运单号无数据，属正常）`);
+      log?.('warning', '[Agent][Arrival] 查询结果表格行未加载（测试运单号无数据，属正常）', meta);
     }
   } catch (err) {
     if (err instanceof Error && err.message.includes('安全保护')) {
       result.message = err.message;
+      log?.('error', `[Agent][Arrival] ${result.message}`, meta);
       return result;
     }
     warnings.push(`查询按钮点击失败: ${(err as Error).message}`);
-    console.log(`  [DRY-RUN] 查询按钮点击异常: ${(err as Error).message}`);
+    log?.('error', `[Agent][Arrival] 查询按钮点击异常: ${(err as Error).message}`, meta);
   }
 
   // 8. 再次检测到件页面元素（查询后）
-  console.log('  [DRY-RUN] 检测到件页面元素（查询后）...');
+  log?.('info', '[Agent][Arrival] 检测到件页面元素（查询后）...', meta);
   const detectAfter = await detectArrivalPage(page);
   result.detectAfter = detectAfter;
 
-  console.log(`  [DRY-RUN] 查询后表格: ${detectAfter.hasTable ? '已检测到' : '未检测到'}`);
-  console.log(`  [DRY-RUN] 查询后提交按钮: ${detectAfter.hasFinalSubmitButton ? '已检测到（不点击）' : '未检测到'}`);
+  log?.('info', `[Agent][Arrival] 查询后: table=${detectAfter.hasTable} submitBtn=${detectAfter.hasFinalSubmitButton}`, meta);
 
   // 9. 明确 finalSubmitClicked = false
   result.finalSubmitClicked = false;
@@ -403,7 +327,7 @@ export async function runArrivalBrowserDryRun(
   result.success = true;
   result.message = 'DRY-RUN 完成：已输入运单并点击查询，未点击最终提交按钮';
 
-  console.log(`  [DRY-RUN] ${result.message}`);
+  log?.('success', `[Agent][Arrival] ${result.message}`, meta);
   return result;
 }
 
@@ -425,56 +349,81 @@ export async function runArrivalBrowserDryRun(
 /**
  * 稳定填写上一站
  *
+ * Phase I-4-Arrival-Fix:
+ *   - 接入 log/meta 参数，关键步骤输出 task_logs
+ *   - 点击 input → fill(prevStation) → Element UI 自动过滤 → 点击候选项
+ *   - DevTools 实测：3295 条候选项，fill 后 <1 秒过滤为 1 条
+ *
  * @returns true=成功，false=失败
  */
-async function stableFillPrevStation(page: Page, prevStation: string): Promise<boolean> {
+async function stableFillPrevStation(
+  page: Page,
+  prevStation: string,
+  log?: AgentRuntimeLogFn,
+  meta?: AgentRuntimeMeta,
+): Promise<boolean> {
   const MAX_RETRIES = 3;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    console.log(`  [DRY-RUN] 上一站填写第 ${attempt} 次尝试...`);
+    log?.('info', `[Agent][Arrival] 上一站填写第 ${attempt}/${MAX_RETRIES} 次尝试`, meta);
 
     try {
-      // Step 7.1: 点击 prevStationInput（旧代码 ArriveScanBatch.ts:182）
+      // Step 1: Click prevStationInput to open popper & remove readonly
       const prevInput = page.locator(ARRIVAL_BATCH_SELECTORS.prevStationInput).first();
       await prevInput.waitFor({ state: 'visible', timeout: 10_000 });
       await prevInput.click({ timeout: 10_000 });
-      console.log(`  [DRY-RUN] 已点击上一站 input`);
 
-      // Step 7.2: 等待下拉浮层出现（旧代码 ArriveScanBatch.ts:183）
-      await page.waitForTimeout(800);
-
-      // Step 7.3: 定位候选项（旧代码 ArriveScanBatch.ts:185-188）
-      // prevStationOption 是 body 下的浮层，不在 #app 内
-      const prevOptionLoc = page.locator(ARRIVAL_BATCH_SELECTORS.prevStationOption);
-      const prevCount = await prevOptionLoc.count();
-      console.log(`  [DRY-RUN] 候选项数量: ${prevCount}`);
-
-      if (prevCount > 0) {
-        // Step 7.4a: 候选项存在 → 点击第一个（旧代码 ArriveScanBatch.ts:188）
-        await prevOptionLoc.first().click({ timeout: 5000 });
-        await page.waitForTimeout(500);
-        console.log(`  [DRY-RUN] 已点击候选项`);
-      } else {
-        // Step 7.4b: 兜底 → 直接 fill + Enter（旧代码 ArriveScanBatch.ts:193-195）
-        console.log(`  [DRY-RUN] 未找到候选项，使用兜底策略：fill + Enter`);
-        await prevInput.fill(prevStation, { timeout: 5000 });
-        await page.keyboard.press('Enter');
-        await page.waitForTimeout(500);
+      // Step 2: Wait for el-select-dropdown popper
+      try {
+        await page.waitForSelector('body > div.el-select-dropdown.el-popper', {
+          state: 'visible',
+          timeout: 5000,
+        });
+      } catch {
+        log?.('warning', '[Agent][Arrival] 上一站 popper 未在 5 秒内出现', meta);
+        await page.keyboard.press('Escape').catch(() => {});
+        await page.waitForTimeout(300);
+        continue;
       }
 
-      // 校验：读取 input value 或周围 el-tag 文本，确认包含 prevStation
-      const verified = await verifyPrevStationSelected(page, prevStation);
+      // Step 3: Type prevStation into the input to filter the popper
+      //   Element UI internally filters the dropdown based on input value
+      //   DevTools confirmed: 3295 items → 1 visible item in <1s
+      await prevInput.fill(prevStation, { timeout: 5000 });
+      log?.('info', `[Agent][Arrival] 已输入上一站: ${prevStation}`, meta);
+
+      // Step 4: Wait for filter to settle, then click the matching option
+      await page.waitForTimeout(300);
+
+      const optionLocator = page.locator(
+        `body > div.el-select-dropdown.el-popper li.el-select-dropdown__item:has-text("${prevStation}")`
+      );
+      try {
+        await optionLocator.first().waitFor({ state: 'visible', timeout: 5000 });
+      } catch {
+        log?.('warning', `[Agent][Arrival] 候选项"${prevStation}"未在过滤后出现`, meta);
+        await page.keyboard.press('Escape').catch(() => {});
+        await page.waitForTimeout(300);
+        continue;
+      }
+
+      await optionLocator.first().click({ timeout: 5000 });
+      await page.waitForTimeout(500);
+      log?.('info', `[Agent][Arrival] 已点击候选项: ${prevStation}`, meta);
+
+      // Step 5: Verify selection
+      const verified = await verifyPrevStationSelected(page, prevStation, log, meta);
       if (verified) {
-        console.log(`  [DRY-RUN] 上一站校验通过（第 ${attempt} 次）`);
+        log?.('success', `[Agent][Arrival] 目标上一站=${prevStation}，页面上一站已验证`, meta);
         return true;
       }
 
-      // 校验失败：关闭可能残留的下拉浮层，再重试
-      console.log(`  [DRY-RUN] 上一站校验失败（第 ${attempt} 次），准备重试`);
+      // Verification failed: close residual popper, retry
+      log?.('warning', `[Agent][Arrival] 上一站校验失败（第 ${attempt} 次），准备重试`, meta);
       await page.keyboard.press('Escape').catch(() => {});
       await page.waitForTimeout(300);
     } catch (err) {
-      console.log(`  [DRY-RUN] 上一站填写第 ${attempt} 次异常: ${(err as Error).message}`);
+      log?.('warning', `[Agent][Arrival] 上一站填写第 ${attempt} 次异常: ${(err as Error).message}`, meta);
       await page.keyboard.press('Escape').catch(() => {});
       await page.waitForTimeout(300);
     }
@@ -484,55 +433,82 @@ async function stableFillPrevStation(page: Page, prevStation: string): Promise<b
     }
   }
 
+  log?.('error', `[Agent][Arrival] 上一站填写 ${MAX_RETRIES} 次尝试全部失败`, meta);
   return false;
 }
 
 /**
  * 校验上一站是否成功选中
  *
- * Element el-select 选中后，可能有两种表现：
+ * Element el-select 选中后，可能有多重表现：
  *   1. input.value 直接为选中文本（普通模式）
  *   2. input.value 为空，但显示 el-tag（多选/远程模式）
+ *   3. .el-select__input 或 .el-input__inner 持有选中值（filterable/动态模式）
  *
- * 校验策略：
- *   - 先读 input.value，若包含 prevStation → 通过
- *   - 否则查找 el-select__tags 或 .el-tag，若包含 prevStation → 通过
- *   - 否则失败
+ * Phase I-4-Arrival-Fix: 增强 DOM 搜索策略，覆盖所有 el-select 选中态路径。
+ *   接入 log/meta 参数，校验结果写入 task_logs。
  */
-async function verifyPrevStationSelected(page: Page, prevStation: string): Promise<boolean> {
+async function verifyPrevStationSelected(
+  page: Page,
+  prevStation: string,
+  log?: AgentRuntimeLogFn,
+  meta?: AgentRuntimeMeta,
+): Promise<boolean> {
   try {
-    // 1. 读取 input.value
+    // Strategy 1: Read input.value directly
     const inputValue = await page.locator(ARRIVAL_BATCH_SELECTORS.prevStationInput).first()
       .inputValue().catch(() => '');
     if (inputValue.includes(prevStation)) {
-      console.log(`  [DRY-RUN] 上一站 input.value 校验通过: "${inputValue}"`);
+      log?.('info', `[Agent][Arrival] 上一站 input.value 校验通过: "${inputValue}"`, meta);
       return true;
     }
 
-    // 2. 检查 el-tag 文本（Element 多选/复杂模式）
-    const tagText = await page.evaluate((search: string) => {
-      // prevStationInput 选择器中的 input 父级是 el-select
-      const tags = document.querySelectorAll(
-        '#app .el-input.el-input--medium.el-input--suffix .el-select__tags-text, ' +
-        '#app .el-select .el-tag, ' +
-        '#app .el-input.el-input--medium.el-input--suffix + .el-tag'
+    // Strategy 2: Flexible DOM search via page.evaluate
+    const found = await page.evaluate((search: string) => {
+      // Search entire el-select subtree for the target text
+      const wrappers = document.querySelectorAll(
+        '#app .el-select, ' +
+        '#app .el-input.el-input--medium.el-input--suffix'
       );
-      for (const tag of tags) {
-        const text = (tag.textContent || '').trim();
-        if (text.includes(search)) return text;
+      for (const wrapper of wrappers) {
+        // Check .el-tag / .el-tag__content (multi-select mode)
+        const tags = wrapper.querySelectorAll('.el-tag, .el-tag__content');
+        for (const tag of tags) {
+          if ((tag.textContent || '').trim().includes(search)) return true;
+        }
+        // Check .el-select__input (filterable mode)
+        const innerInput = wrapper.querySelector('.el-select__input') as HTMLInputElement | null;
+        if (innerInput?.value?.includes(search)) return true;
+        // Check .el-input__inner (standard mode)
+        const standardInput = wrapper.querySelector('.el-input__inner') as HTMLInputElement | null;
+        if (standardInput?.value?.includes(search)) return true;
+        // Check .el-select__tags-text
+        const tagsTexts = wrapper.querySelectorAll('.el-select__tags-text');
+        for (const t of tagsTexts) {
+          if ((t.textContent || '').trim().includes(search)) return true;
+        }
       }
-      return '';
-    }, prevStation).catch(() => '');
+      // Fallback: search trigger area visible text
+      const triggerAreas = document.querySelectorAll(
+        '#app .el-select .el-input__suffix, ' +
+        '#app .el-select .el-input__prefix'
+      );
+      for (const area of triggerAreas) {
+        if ((area.textContent || '').trim().includes(search)) return true;
+      }
+      return false;
+    }, prevStation).catch(() => false);
 
-    if (tagText.includes(prevStation)) {
-      console.log(`  [DRY-RUN] 上一站 el-tag 校验通过: "${tagText}"`);
+    if (found) {
+      log?.('info', `[Agent][Arrival] 上一站 DOM 文本校验通过: "${prevStation}"`, meta);
       return true;
     }
 
-    // 3. 校验失败
-    console.log(`  [DRY-RUN] 上一站校验失败：input="${inputValue}"，tag="${tagText}"`);
+    // Strategy 3: Failed
+    log?.('warning', `[Agent][Arrival] 上一站校验失败：input="${inputValue.substring(0, 50)}"`, meta);
     return false;
-  } catch {
+  } catch (err) {
+    log?.('warning', `[Agent][Arrival] 上一站校验异常: ${(err as Error).message}`, meta);
     return false;
   }
 }

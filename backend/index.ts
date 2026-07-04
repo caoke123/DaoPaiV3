@@ -1,6 +1,8 @@
 // bnsy-operator-next 后端入口
 // 启动 Express 服务，初始化 Database，初始化 BrowserPool，注册路由
 //
+// Phase K-3A: 窗口 CDP endpoint 暴露（ENABLE_WINDOW_CDP_ENDPOINT）
+//
 // Phase H: 完善优雅停机
 //   - isShuttingDown 标志位 → 中间件拦截新请求（白名单放行健康检查）
 //   - SIGINT / SIGTERM → cancelAllRunningTasks → 等待写入 → 断开浏览器 → 退出
@@ -10,6 +12,7 @@
 // ── 加载 .env 环境变量（Node 22+ 内置支持，.env 不存在时静默跳过）──
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { execSync } from 'node:child_process';
 try {
   const envPath = join(__dirname, '..', '.env');
   const envContent = readFileSync(envPath, 'utf-8');
@@ -56,6 +59,18 @@ import { taskLogManager } from './utils/TaskLogManager';
 
 // 服务端口（DaoPai V3: 3300，与 V2 3200 完全隔离；可通过 .env 的 PORT 覆盖）
 const PORT = parseInt(process.env.PORT || '3300', 10);
+
+function getRuntimeGitHash(): string {
+  try {
+    return execSync('git rev-parse --short HEAD', { cwd: join(__dirname, '..'), encoding: 'utf-8' }).trim();
+  } catch {
+    return 'unknown';
+  }
+}
+
+function logBackendRuntimeProof(): void {
+  console.log(`[RuntimeProof][Backend] phase=K-R1 routesAgentOnly=true buildTime=${new Date().toISOString()} git=${getRuntimeGitHash()}`);
+}
 
 /** Phase H: 优雅停机标志位 — 收到信号后设为 true，中间件据此拒绝新请求 */
 let isShuttingDown = false;
@@ -186,6 +201,8 @@ function setupShutdownHandlers(): void {
   process.on('SIGINT', () => performShutdown('SIGINT'));
   process.on('SIGTERM', () => performShutdown('SIGTERM'));
 }
+
+logBackendRuntimeProof();
 
 async function main(): Promise<void> {
   console.log('═══════════════════════════════════════════');

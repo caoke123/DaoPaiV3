@@ -56,7 +56,7 @@ function getLoginRetryKey(siteCode: string, staffName: string): string {
  *
  * 卡死判定条件（任一满足即判定为卡死）：
  *   - P0 popup_blocking（弹窗遮罩仍然可见）
- *   - 登录超时（20s 内未跳转）
+ *   - 登录超时（3s 内未进入首页；兼容旧 20s 文案）
  *   - degraded 且有明确 P0 失败原因
  */
 function isLoginDeadlocked(
@@ -65,6 +65,7 @@ function isLoginDeadlocked(
   loginStatus?: string,
 ): boolean {
   if (p0FailedCheck === 'popup_blocking') return true;
+  if (loginMessage?.includes('3s 内未进入首页')) return true;
   if (loginMessage?.includes('20s 内未跳转')) return true;
   if (loginStatus === 'degraded' && p0FailedCheck) return true;
   return false;
@@ -118,7 +119,58 @@ async function performLoginWithP0AndRecovery(
   );
 
   if (loginUpdate.status !== 'ready') {
-    // 登录失败（如无凭据/密码错误）— 不重启
+    // 登录失败（如无凭据/密码错误）通常不重启；
+    // 但登录后 3s 未进入首页属于登录弹窗/页面卡死，按关闭窗口重登处理。
+    if (isLoginDeadlocked(undefined, loginUpdate.loginMessage, loginUpdate.status)) {
+      const retryCount = loginRetryCount.get(retryKey) ?? 0;
+      if (retryCount >= MAX_LOGIN_RETRIES) {
+        console.error(`[LoginGuard] 登录阶段重启后仍未 READY：${staffName}（site=${siteCode}），已重启 ${MAX_LOGIN_RETRIES} 次`);
+        loginRetryCount.delete(retryKey);
+        return {
+          status: 'failed',
+          message: `登录后未进入首页，重启后仍未就绪`,
+        };
+      }
+
+      console.log(`[LoginGuard] 登录后 3s 未进入首页，关闭窗口重试：${staffName}（site=${siteCode}）`);
+      loginRetryCount.set(retryKey, retryCount + 1);
+      await closeWindowForRetry(runtimeKey, staffName, siteName, siteCode);
+
+      const relaunchResult = await adapter.ensureWindowReady({
+        tenantId: DEFAULT_TENANT_ID,
+        siteId: siteCode,
+        windowId: `staff-${staffName}`,
+        staffName,
+        siteName,
+        windowName: staffName,
+      });
+
+      const retryLoginUpdate = await tryAutoLoginAfterEnsure(
+        { runtimeKey: relaunchResult.runtimeKey, status: relaunchResult.status, launched: relaunchResult.launched },
+        staffName,
+        siteName,
+      );
+
+      if (retryLoginUpdate.status !== 'ready') {
+        console.error(`[LoginGuard] 重启后登录仍未 READY：${staffName}（site=${siteCode}），原因：${retryLoginUpdate.loginMessage || retryLoginUpdate.status}`);
+        loginRetryCount.delete(retryKey);
+        return { status: 'failed', message: `登录后未进入首页，重启后仍未就绪` };
+      }
+
+      const retryP0Report = await runP0CheckSafely(relaunchResult.runtimeKey, staffName);
+      if (retryP0Report && retryP0Report.passed) {
+        console.log(`[LoginGuard] 登录阶段重启后 READY 通过：${staffName}（site=${siteCode}）`);
+        loginRetryCount.delete(retryKey);
+        return { status: 'ready' };
+      }
+
+      const retryFailedCheck = retryP0Report?.failedCheck ?? 'unknown';
+      console.error(`[LoginGuard] 登录阶段重启后 P0 仍未通过：${staffName}（site=${siteCode}），原因：${retryFailedCheck}`);
+      loginRetryCount.delete(retryKey);
+      return { status: 'failed', message: `登录后未进入首页，重启后仍未就绪 (${retryFailedCheck})` };
+    }
+
+    // 非卡死登录失败（如无凭据/密码错误）— 不重启
     return loginUpdate;
   }
 

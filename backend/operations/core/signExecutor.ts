@@ -15,12 +15,15 @@ import {
 const TIMEOUT_ELEMENT = 10000;
 const TIMEOUT_BUTTON = 3000;
 const TIMEOUT_DIALOG = 10000;
-const SEARCH_SETTLE = 2000;
 const DIALOG_SETTLE = 500;
 const MAX_RETRIES = 3;
+const MAX_SEARCH_RETRIES = 2;
+const SEARCH_WAIT_MIN_MS = 3500;
+const SEARCH_WAIT_MAX_MS = 5000;
 const POPUP_GUARD_TIMEOUT = 4000;
 
 type LogFn = (level: 'info' | 'warning' | 'error', msg: string) => void;
+type SearchResultStatus = 'has_rows' | 'no_data' | 'timeout' | 'error';
 
 const noopLog: LogFn = () => {};
 
@@ -30,6 +33,33 @@ async function waitForLoadingHidden(page: Page, timeout: number = TIMEOUT_ELEMEN
 
 function page_wait(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function randomWaitMs(min = SEARCH_WAIT_MIN_MS, max = SEARCH_WAIT_MAX_MS): number {
+  return Math.floor(min + Math.random() * (max - min + 1));
+}
+
+async function hasVisible(page: Page, selector: string): Promise<boolean> {
+  const loc = page.locator(selector).first();
+  return (await loc.count().catch(() => 0)) > 0 && await loc.isVisible().catch(() => false);
+}
+
+async function detectNoData(page: Page): Promise<boolean> {
+  const emptySelector = '.el-table__empty-block:visible, .el-table__empty-text:visible';
+  const emptyLoc = page.locator(emptySelector).first();
+  if ((await emptyLoc.count().catch(() => 0)) > 0 && await emptyLoc.isVisible().catch(() => false)) {
+    const text = ((await emptyLoc.textContent({ timeout: 300 }).catch(() => '')) || '').replace(/\s+/g, '');
+    if (!text || /暂无数据|无数据|没有数据|没有查询到数据|未查询到/.test(text)) {
+      return true;
+    }
+  }
+
+  const tableText = ((await page.locator('.el-table').first().textContent({ timeout: 300 }).catch(() => '')) || '').replace(/\s+/g, '');
+  return /暂无数据|无数据|没有数据|没有查询到数据|未查询到/.test(tableText);
+}
+
+async function isSearchLoadingVisible(page: Page): Promise<boolean> {
+  return hasVisible(page, '.el-loading-mask:visible, .el-loading-spinner:visible');
 }
 
 /**
@@ -134,20 +164,75 @@ export class SignExecutor {
     await waitForLoadingHidden(this.page);
   }
 
-  async clickSearch(): Promise<void> {
+  private async waitForSearchResult(attempt: number, timeoutMs: number): Promise<SearchResultStatus> {
+    const start = Date.now();
+    let loadingSeen = false;
+
+    while (Date.now() - start < timeoutMs) {
+      const rowCount = await this.page.locator(SIGN_SELECTORS.orderRow).count().catch(() => 0);
+      if (rowCount > 0) {
+        this.logger.info(`[clickSearch] has_rows: ${rowCount} 条`);
+        return 'has_rows';
+      }
+
+      if (await detectNoData(this.page)) {
+        this.logger.info('[clickSearch] 搜索完成：暂无数据，结束本页处理');
+        return 'no_data';
+      }
+
+      const loadingVisible = await isSearchLoadingVisible(this.page);
+      if (loadingVisible) {
+        loadingSeen = true;
+      } else if (loadingSeen || Date.now() - start >= 800) {
+        const latestRowCount = await this.page.locator(SIGN_SELECTORS.orderRow).count().catch(() => 0);
+        if (latestRowCount === 0) {
+          this.logger.info('[clickSearch] Loading 已结束且无表格行，按暂无数据处理');
+          return 'no_data';
+        }
+      }
+
+      await page_wait(150);
+    }
+
+    this.logger.warn(`[clickSearch] 第${attempt}次等待失败：未出现表格行/暂无数据/Loading结束状态`);
+    return 'timeout';
+  }
+
+  async clickSearch(): Promise<SearchResultStatus> {
     const label = 'clickSearch';
     this.logger.setContext({ action: '搜索' });
     this.logger.info('点击搜索');
 
-    await retry(async () => {
-      await this.waitForPageReady();
-      await this.page.click(SIGN_SELECTORS.searchButton, { timeout: TIMEOUT_BUTTON });
-      await page_wait(SEARCH_SETTLE);
-      await waitForLoadingHidden(this.page);
+    for (let attempt = 1; attempt <= MAX_SEARCH_RETRIES; attempt++) {
+      try {
+        await dismissGuardingPopups(this.page, this.adapterScopedLog()).catch(() => {});
+        await this.page.keyboard.press('Escape').catch(() => {});
+        await page_wait(300);
+        await waitForLoadingHidden(this.page, 3000);
+        await this.waitForPageReady();
+        await this.page.click(SIGN_SELECTORS.searchButton, { timeout: TIMEOUT_BUTTON });
 
-      const rowCount = await this.orderList.getRowCount();
-      this.logger.info(`搜索完成，返回 ${rowCount} 条记录`);
-    }, MAX_RETRIES, label, this.adapterScopedLog(), this.page);
+        const timeoutMs = randomWaitMs();
+        this.logger.info(`[clickSearch] 第${attempt}次等待搜索结果，timeout=${timeoutMs}ms`);
+        const status = await this.waitForSearchResult(attempt, timeoutMs);
+
+        if (status === 'has_rows') {
+          return status;
+        }
+        if (status === 'no_data') {
+          return status;
+        }
+      } catch (e) {
+        this.logger.warn(`[${label}] 第${attempt}次重试失败: ${(e as Error).message}`);
+      }
+
+      if (attempt < MAX_SEARCH_RETRIES) {
+        await page_wait(800);
+      }
+    }
+
+    this.logger.warn('[clickSearch] 2次重试后仍无结果，结束搜索');
+    throw new Error('搜索结果等待超时：2 次重试后仍未出现表格行或暂无数据状态');
   }
 
   async selectCourier(staffName: string): Promise<void> {
@@ -277,6 +362,7 @@ export class SignExecutor {
   }
 
   async executeBatchFlow(pageSize: PageSizeOption = DEFAULT_PAGE_SIZE, signerPerson?: string): Promise<SignBatchResult> {
+    const flowStart = Date.now();
     this.logger.resetContext();
     this.logger.setContext({ action: '批量签收' });
     this.logger.info(`开始批量签收流程 (pageSize=${pageSize}${signerPerson ? `, signerPerson=${signerPerson}` : ''})`);
@@ -290,7 +376,21 @@ export class SignExecutor {
     try {
       await this.waitForPageReady();
       await this.pagination.setPageSize(pageSize);
-      await this.clickSearch();
+      const searchStatus = await this.clickSearch();
+      if (searchStatus === 'no_data') {
+        this.logger.info('搜索结果为空：无可签收记录，结束批量签收流程');
+        report = new ExecutionReportBuilder(0, this.dryRunMode).build();
+        this.logger.info(`PERF executeBatchFlow total ${Date.now() - flowStart}ms`);
+        this.logger.info('\n' + formatExecutionReport(report));
+        return {
+          totalPages: report.totalPages,
+          totalSelected: report.totalSelected,
+          pageResults,
+          signPlan,
+          dryRun: this.dryRunMode,
+          report,
+        };
+      }
 
       totalPages = await this.pagination.getTotalPages();
       const totalCount = await this.pagination.getTotalCount();
@@ -357,9 +457,6 @@ export class SignExecutor {
               signer: pageSigner,
               label: 'error',
             });
-            if (screenshot) {
-              this.logger.error(`异常截图已保存: ${screenshot}`);
-            }
           } catch {
             // 截图失败不再抛出
           }
@@ -398,9 +495,6 @@ export class SignExecutor {
           pageNum: 0,
           label: 'flow_error',
         });
-        if (screenshot) {
-          this.logger.error(`异常截图已保存: ${screenshot}`);
-        }
       } catch {
         // 截图失败不再抛出
       }
@@ -421,6 +515,7 @@ export class SignExecutor {
 
     this.logger.resetContext();
     this.logger.info(`批量流程完成: 成功 ${report.successPages} 页，失败 ${report.failedPages} 页，选中 ${report.totalSelected} 条`);
+    this.logger.info(`PERF executeBatchFlow total ${Date.now() - flowStart}ms`);
     this.logger.info('\n' + formatExecutionReport(report));
 
     return {

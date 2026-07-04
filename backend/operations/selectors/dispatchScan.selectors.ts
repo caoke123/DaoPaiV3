@@ -1,14 +1,12 @@
 /**
  * 派件扫描页面 DOM 选择器配置
  *
- * 来源：真实凤凰系统 DOM 采集（2026-06-20）
+ * 来源：真实凤凰系统 DOM 采集（2026-06-20），Phase 5-G-8-1 更新语义化选择器
  * 用途：DispatchScan 操作模块引用，避免选择器散落在业务代码中
  *
- * 关键修正点（相对原始采集数据）：
- * - 派件员/分页下拉选项用文本匹配 + :visible（当前可见浮层），不用 .hover class
- * - 分页浮层不用 nth-child(14) 固定位置，改用 :visible 过滤
- * - selectAllCheckbox 优先用语义化选择器（th.el-table-column--selection），
- *   不依赖动态 column ID（el-table_1_column_1）
+ * Phase 5-G-8-1 修正：
+ * - 派件员下拉框 input 使用语义化选择器（.dispatchscan_left），不用绝对 nth-child 路径
+ * - 添加按钮、上传按钮用语义化选择器
  */
 
 /**
@@ -23,51 +21,34 @@
  * 6. ⚠️点击"上传"按钮（uploadButton）—— 真实提交按钮，受 DISPATCH_SCAN_DRY_RUN 保护
  */
 export const DISPATCH_SCAN_SELECTORS = {
-  /** 1a. 派件员下拉框 input（点击展开） */
-  courierSelectInput:
-    '#app > div.app-wrapper.openSidebar > div.main-container.hasTagsView > section > div > div.dispatchscan_left > div > div:nth-child(1) > div > div.el-input.el-input--medium.el-input--suffix > input',
+  /** 1a. 派件员区域（包含 label "派件员" 的那一行的 el-select input） */
+  courierSelectWrapper: '.dispatchscan_left .el-form-item:has(label:has-text("派件员"))',
+  /** 1b. 派件员下拉框 input（语义化：在派件员区域内的 el-select input） */
+  courierSelectInput: '.dispatchscan_left .el-form-item:has(label:has-text("派件员")) .el-select .el-input__inner',
+  /** 1c. 派件员选项（文本匹配 courierName，可见浮层） */
+  courierOptionTextOnly: 'div.el-select-dropdown.el-popper:visible li.el-select-dropdown__item',
 
-  /**
-   * 1b. 派件员下拉选项（文本匹配 staffName）
-   * 使用 :visible 过滤当前可见浮层，不用 .hover class
-   * ${staffName} 为运行时替换占位符
-   */
-  courierOption:
-    'div.el-select-dropdown.el-popper:visible li.el-select-dropdown__item:has-text("${staffName}")',
+  /** 2. 运单号输入框（语义化：单号/运单号 label 所在行的 input） */
+  waybillInput: '.dispatchscan_left .el-form-item:has(label:has-text("运单"), label:has-text("单号")) input.el-input__inner, .dispatchscan_left input.el-input__inner[placeholder*="单号"], .dispatchscan_left input.el-input__inner[placeholder*="运单"]',
 
-  /** 2. 运单号输入框 */
-  waybillInput:
-    '#app > div.app-wrapper.openSidebar > div.main-container.hasTagsView > section > div > div.dispatchscan_left > div > div:nth-child(5) > div > input',
-
-  /** 3. "添加"按钮（primary 样式）—— 语义化选择器，不依赖 nth-child 固定位置 */
+  /** 3. "添加"按钮（primary 样式）—— 语义化选择器 */
   addButton: '.dispatchscan_left button.el-button--primary',
 
-  /** 4a. 分页大小下拉框 input（点击展开） */
-  pageSizeInput:
-    '#app > div.app-wrapper.openSidebar > div.main-container.hasTagsView > section > div > div.dispatchscan_right > div > div.el-pagination.is-background > span.el-pagination__sizes > div > div > input',
+  /** 4a. 分页大小下拉框 input */
+  pageSizeInput: '.dispatchscan_right .el-pagination .el-pagination__sizes .el-select .el-input__inner',
 
-  /**
-   * 4b. 分页选项"200条/页"
-   * 使用 :visible 过滤当前可见浮层，文本匹配"200条/页"，不用 nth-child(14)
-   */
-  pageSizeOption200:
-    'div.el-select-dropdown.el-popper:visible li.el-select-dropdown__item:has-text("200条/页")',
+  /** 4b. 分页选项"200条/页" */
+  pageSizeOption200: 'div.el-select-dropdown.el-popper:visible li.el-select-dropdown__item:has-text("200条/页")',
 
-  /**
-   * 5. 表头全选 checkbox
-   * 优先用语义化选择器（不依赖动态 column ID el-table_1_column_1）
-   * 原始绝对路径作为参考保留在注释中：
-   *   #app > ... > th.el-table_1_column_1.el-table-column--selection.is-leaf.el-table__cell > div > label > span > span
-   */
+  /** 5. 表头全选 checkbox */
   selectAllCheckbox: 'th.el-table-column--selection .el-checkbox__inner',
 
-  /** 6. ⚠️"上传"按钮（真实提交按钮，success 样式）—— 语义化选择器，受 DISPATCH_SCAN_DRY_RUN 保护 */
+  /** 6. ⚠️"上传"按钮（真实提交按钮，success 样式） */
   uploadButton: '.dispatchscan_right button.el-button--success',
 } as const;
 
 /**
  * 派件表格行选择器（用于 countTableRows 检测添加成功/失败）
- * 派件表格位于 dispatchscan_right 区域
  */
 export const DISPATCH_TABLE_ROW_SELECTOR =
   'div.dispatchscan_right div.el-table__body-wrapper table tbody tr.el-table__row';

@@ -26,6 +26,7 @@
 import { chromium } from 'playwright';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { createServer as netCreateServer, type Server as NetServer } from 'node:net';
 import {
   TARGET_DASHBOARD,
   TARGET_DOMAIN,
@@ -45,6 +46,8 @@ import { PlaywrightProfileManager } from './PlaywrightProfileManager';
 import { PlaywrightLoginVerifier } from './PlaywrightLoginVerifier';
 import { PlaywrightWindowStateStore } from './PlaywrightWindowState';
 import { P0Verifier, type P0Report } from './P0Verifier';
+import { PopupManager } from '../browser/PopupManager';
+import { NativeAlertGuard, attachNativeAlertGuard, drainNativeAlerts } from '../browser/NativeAlertGuard';
 
 export class PlaywrightRuntime {
   private static instance: PlaywrightRuntime;
@@ -62,6 +65,134 @@ export class PlaywrightRuntime {
   }
 
   private constructor() {}
+
+  /**
+   * 为 page 注册浏览器原生弹窗自动处理（alert/confirm/prompt）
+   * 确保在任何 Playwright page 创建后都调用此方法
+   *
+   * Phase 5-G-8-3: 同时挂载 NativeAlertGuard（CDP 兜底 + drain）
+   */
+  private attachDialogHandler(page: import('playwright').Page, staffName?: string): void {
+    // Phase 5-G-8-3: NativeAlertGuard 优先挂载（原生 alert/confirm/prompt）
+    if (!NativeAlertGuard.getInstance().isAttached(page)) {
+      attachNativeAlertGuard(page, {
+        staffName,
+        scope: 'page-init',
+        log: (level, msg) => {
+          if (level === 'warn') console.warn(`[NativeAlert][${staffName ?? 'window'}]${msg}`);
+          else console[level](`[NativeAlert][${staffName ?? 'window'}]${msg}`);
+        },
+      });
+    }
+    // PopupManager 的 DOM 弹窗 dialog handler（保留兼容）
+    const popupMgr = PopupManager.getInstance();
+    if (!popupMgr.isRegistered(page)) {
+      popupMgr.register(page, staffName);
+    }
+  }
+
+  // ── Phase K-3A: CDP endpoint 暴露（用于 Agent 接管 READY 窗口） ──
+  /**
+   * CDP 端口范围常量。
+   *
+   * 选择 9300-9399 范围（100 个端口）以避开：
+   * - 9222（Chrome 默认 CDP 端口，可能被其他工具占用）
+   * - 3300（V3 后端服务端口）
+   * - 5173-5180（Vite dev server 常用端口）
+   *
+   * 仅 127.0.0.1 监听，不暴露公网。
+   */
+  private static readonly CDP_PORT_BASE = 9300;
+  private static readonly CDP_PORT_RANGE = 100;
+
+  /**
+   * 检查 CDP endpoint 暴露开关是否启用。
+   *
+   * 启用方式：设置环境变量 ENABLE_WINDOW_CDP_ENDPOINT=true
+   * 默认关闭，保持向后兼容（旧窗口无 cdpPort 字段）。
+   */
+  private isCdpEndpointEnabled(): boolean {
+    return process.env.ENABLE_WINDOW_CDP_ENDPOINT === 'true';
+  }
+
+  /**
+   * djb2 字符串哈希 → 端口范围偏移
+   *
+   * 用于将 runtimeKey 稳定映射到 9300-9399 范围内的起始端口。
+   * 同一 runtimeKey 多次启动会得到相同起始端口，便于调试。
+   */
+  private hashRuntimeKeyToPortOffset(runtimeKey: string): number {
+    let hash = 5381;
+    for (let i = 0; i < runtimeKey.length; i++) {
+      // hash * 33 + c（djb2 算法）
+      hash = ((hash << 5) + hash) + runtimeKey.charCodeAt(i);
+      // 保持 32 位正整数
+      hash = hash & 0x7fffffff;
+    }
+    return hash % PlaywrightRuntime.CDP_PORT_RANGE;
+  }
+
+  /**
+   * 检查端口是否可用（仅 127.0.0.1）
+   *
+   * 通过 net.createServer 试探 listen，成功则立即 close。
+   * 失败（EADDRINUSE 等）返回 false。
+   */
+  private isPortAvailable(port: number): Promise<boolean> {
+    return new Promise(resolve => {
+      const server: NetServer = netCreateServer();
+      let settled = false;
+      const done = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        resolve(ok);
+      };
+      server.once('error', () => {
+        // 端口被占用
+        if (!server.listening) {
+          // ensure server is closed even if not listening
+          server.close(() => done(false));
+          // 兜底：100ms 后强制 resolve
+          setTimeout(() => done(false), 100);
+        } else {
+          server.close(() => done(false));
+        }
+      });
+      server.listen(port, '127.0.0.1', () => {
+        // 端口可用，立即关闭
+        server.close(() => done(true));
+      });
+    });
+  }
+
+  /**
+   * 为窗口分配 CDP 端口。
+   *
+   * 算法：
+   *   1. 按 runtimeKey 哈希到 9300-9399 范围内的起始端口
+   *   2. 依次尝试起始端口、下一个端口、再下一个...（最多尝试 100 次）
+   *   3. 找到可用端口则返回
+   *   4. 全部冲突则返回 null（不阻断窗口启动，仅标记 cdpAttachable=false）
+   *
+   * @returns { port, endpoint } 或 null
+   */
+  private async allocateCdpPort(runtimeKey: string, tag: string): Promise<{ port: number; endpoint: string } | null> {
+    const startOffset = this.hashRuntimeKeyToPortOffset(runtimeKey);
+    const base = PlaywrightRuntime.CDP_PORT_BASE;
+    const range = PlaywrightRuntime.CDP_PORT_RANGE;
+
+    for (let i = 0; i < range; i++) {
+      const port = base + ((startOffset + i) % range);
+      if (await this.isPortAvailable(port)) {
+        console.log(`${tag} CDP 端口分配成功: port=${port} (runtimeKey=${runtimeKey}, offset=${startOffset}, try=${i + 1})`);
+        return { port, endpoint: `http://127.0.0.1:${port}` };
+      }
+      console.warn(`${tag} CDP 端口 ${port} 被占用，尝试下一个`);
+    }
+
+    console.error(`${tag} CDP 端口分配失败: 9300-9399 全部被占用（runtimeKey=${runtimeKey}）`);
+    return null;
+  }
 
   /**
    * 启动一个 Playwright 原生窗口
@@ -97,6 +228,8 @@ export class PlaywrightRuntime {
       userDataDir,
       createdAt: Date.now(),
       lastUpdated: Date.now(),
+      // Phase K-3A: CDP 接管能力默认 false，分配成功后才置 true
+      cdpAttachable: false,
     });
 
     try {
@@ -119,40 +252,66 @@ export class PlaywrightRuntime {
       // 写入失败只 warning，不阻断启动
       this.disableChromeSessionRestore(userDataDir, tag);
 
+      // 2.7 Phase K-3A: 分配 CDP 调试端口（仅当 ENABLE_WINDOW_CDP_ENDPOINT=true 时）
+      // 用于 Agent 通过 chromium.connectOverCDP(cdpEndpoint) 接管 READY 窗口。
+      // - 开关关闭：不分配，cdpAttachable 保持 false，旧窗口行为不变
+      // - 分配成功：把 --remote-debugging-port=<port> 加入 args，Chrome 启动后即监听 127.0.0.1:<port>
+      // - 分配失败（端口全占用）：不阻断启动，cdpAttachable 保持 false，记录 error
+      let cdpPort: number | undefined;
+      let cdpEndpoint: string | undefined;
+      if (this.isCdpEndpointEnabled()) {
+        const allocated = await this.allocateCdpPort(runtimeKey, tag);
+        if (allocated) {
+          cdpPort = allocated.port;
+          cdpEndpoint = allocated.endpoint;
+        } else {
+          // 分配失败不阻断启动，仅记录（窗口仍可正常使用，只是不能被 Agent CDP 接管）
+          console.warn(`${tag} CDP 端口分配失败，窗口将以非 CDP-attachable 模式启动`);
+        }
+      } else {
+        console.log(`${tag} CDP endpoint 开关未启用（ENABLE_WINDOW_CDP_ENDPOINT!=true），跳过端口分配`);
+      }
+
       // 3. 启动持久化 context
-      console.log(`${tag} 正在启动 Chrome（channel=chrome, headless=${opts.headless ?? false}）...`);
+      console.log(`${tag} 正在启动 Chrome（channel=chrome, headless=${opts.headless ?? false}, cdpPort=${cdpPort ?? 'n/a'}）...`);
+      // Phase K-3A: args 改为动态构造，按需追加 --remote-debugging-port
+      const launchArgs: string[] = [
+        '--disable-blink-features=AutomationControlled',
+        '--no-first-run',
+        '--no-default-browser-check',
+        // Phase 2-D-Run 补充修正：禁用 Chrome 密码保存弹窗（浏览器 UI，非页面 DOM）
+        '--disable-save-password-bubble',
+        '--disable-password-manager-reauthentication',
+        '--disable-features=PasswordManagerOnboarding,PasswordLeakDetection',
+        // Phase 4-A 补丁：禁用 Chrome "恢复页面"弹窗（浏览器 UI，非页面 DOM）
+        '--disable-session-crashed-bubble',
+        '--restore-last-session=false',
+      ];
+      if (cdpPort !== undefined) {
+        // Chrome 远程调试端口：仅 127.0.0.1 监听，不暴露公网
+        launchArgs.push(`--remote-debugging-port=${cdpPort}`);
+      }
       const context = await chromium.launchPersistentContext(userDataDir, {
         headless: opts.headless ?? false,
         channel: 'chrome',
         viewport: { width: 1280, height: 800 },
-        args: [
-          '--disable-blink-features=AutomationControlled',
-          '--no-first-run',
-          '--no-default-browser-check',
-          // Phase 2-D-Run 补充修正：禁用 Chrome 密码保存弹窗（浏览器 UI，非页面 DOM）
-          '--disable-save-password-bubble',
-          '--disable-password-manager-reauthentication',
-          '--disable-features=PasswordManagerOnboarding,PasswordLeakDetection',
-          // Phase 4-A 补丁：禁用 Chrome "恢复页面"弹窗（浏览器 UI，非页面 DOM）
-          '--disable-session-crashed-bubble',
-          '--restore-last-session=false',
-        ],
+        args: launchArgs,
       });
 
-      // 4. 获取或创建 page
-      let page = context.pages()[0];
-      if (!page) {
-        page = await context.newPage();
-      }
+      // 4. Phase 5-G-8-5: 标签页归一化 — 关闭残留标签，只保留一个干净首页
+      console.log(`${tag} 标签页归一化...`);
+      const page = await this.normalizeTabsForWindow(context, TARGET_DASHBOARD, tag, opts.staffName);
 
-      this.stateStore.update(runtimeKey, { context, page });
-
-      // 5. 导航到目标系统
-      const initialUrl = opts.initialUrl ?? TARGET_DASHBOARD;
-      console.log(`${tag} 导航到 ${initialUrl} ...`);
-      await page.goto(initialUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => {
-        console.warn(`${tag} 初始导航失败: ${(e as Error).message}`);
+      // Phase K-3A: 记录 CDP endpoint 信息到 runtime state，供 Agent 查询接管
+      this.stateStore.update(runtimeKey, {
+        context,
+        page,
+        cdpPort,
+        cdpEndpoint,
+        cdpAttachable: cdpPort !== undefined && cdpEndpoint !== undefined,
       });
+
+      // 5. 导航已在 normalizeTabsForWindow 中完成
 
       // 等待页面稳定：目标系统可能在 DOM 加载后通过 JS 重定向到 /login
       // networkidle 等待网络请求空闲，确保重定向完成
@@ -279,6 +438,8 @@ export class PlaywrightRuntime {
 
     // 尝试关闭 context（如果存在）
     if (state.context) {
+      // Phase 5-G-8-5: 关闭前先清理所有标签页（避免残留标签影响下次启动）
+      await this.cleanupAllTabsBeforeClose(state.context, tag, state.staffName).catch(() => {});
       try {
         console.log(`${tag} 正在关闭 context...`);
         await state.context.close();
@@ -429,6 +590,8 @@ export class PlaywrightRuntime {
       if (!keepPage) {
         console.log(`${tag} 无任何标签页，新建并导航到 dashboard`);
         keepPage = await context.newPage();
+        // ★ Phase 5-G-7-2: 新创建的 page 注册弹窗处理
+        this.attachDialogHandler(keepPage, state.staffName);
         await keepPage.goto(TARGET_DASHBOARD, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => {
           console.warn(`${tag} 导航到 dashboard 失败: ${(e as Error).message}`);
         });
@@ -441,9 +604,29 @@ export class PlaywrightRuntime {
       }
     }
 
+    // ★ Phase 5-G-7-2: 确保 kept page 已注册弹窗自动处理
+    if (keepPage) {
+      this.attachDialogHandler(keepPage, state.staffName);
+    }
+
     // 4. 更新 state
     const finalPages = context.pages();
     const activePageUrl = (() => { try { return keepPage?.url() ?? ''; } catch { return ''; } })();
+    // Phase 5-G-8-5: 标签页整理后清理弹窗（防止残留弹窗影响 READY/P0 判断）
+    if (keepPage) {
+      await drainNativeAlerts(keepPage, {
+        durationMs: 1000,
+        intervalMs: 200,
+        staffName: state.staffName,
+        scope: 'ensure-single-page',
+        log: (level: 'info' | 'warn' | 'error', msg: string) => {
+          if (level === 'warn') console.warn(`${tag}${msg}`);
+          else console[level](`${tag}${msg}`);
+        },
+      }).catch(() => 0);
+      await PopupManager.getInstance().dismissRechargeCancelDialog(keepPage).catch(() => false);
+    }
+
     this.stateStore.update(runtimeKey, {
       page: keepPage,
       pageCount: finalPages.length,
@@ -779,6 +962,155 @@ export class PlaywrightRuntime {
    *
    * 幂等：多次调用安全，结果一致。
    */
+  /**
+   * Phase 5-G-8-5: 关闭窗口前清理所有标签页
+   *
+   * 遍历 context 中所有 page，逐个关闭（best-effort）。
+   * - 每个页面先绑定 dialog dismiss（防止 alert 阻塞 close）
+   * - 尝试关闭 DOM 弹窗（复用 PopupManager）
+   * - 逐个 page.close({ runBeforeUnload: false })
+   * - 任何异常只 warn，不阻断
+   */
+  private async cleanupAllTabsBeforeClose(
+    context: import('playwright').BrowserContext,
+    tag: string,
+    staffName?: string,
+  ): Promise<void> {
+    const pages = context.pages();
+    if (pages.length === 0) return;
+    console.log(`${tag} 关闭前清理 ${pages.length} 个标签页...`);
+
+    const popupMgr = PopupManager.getInstance();
+    for (const page of pages) {
+      try {
+        // 兜底绑定 dialog dismiss（防止 close 时 alert 阻塞）
+        page.on('dialog', async (dialog) => {
+          try { await dialog.dismiss(); } catch { /* ignore */ }
+        });
+
+        // 清理 DOM 弹窗（best-effort）
+        await popupMgr.dismissRechargeCancelDialog(page).catch(() => false);
+
+        // 关闭标签页
+        if (!page.isClosed()) {
+          const url = page.url();
+          await page.close({ runBeforeUnload: false }).catch((e: Error) => {
+            console.warn(`${tag} 关闭标签页失败(${url}): ${e.message}`);
+          });
+        }
+      } catch (e) {
+        console.warn(`${tag} 清理标签页异常: ${(e as Error).message}`);
+      }
+    }
+    console.log(`${tag} 标签页清理完成`);
+  }
+
+  /**
+   * Phase 5-G-8-5: 启动/恢复窗口时标签页归一化
+   *
+   * 目标：只保留一个干净首页标签，关闭所有残留标签。
+   *
+   * 流程：
+   *   1. 给所有已有页面绑定原生 dialog 清理
+   *   2. 优先选一个可用页面作为主页面
+   *   3. 如无可用页面，新建一个
+   *   4. 关闭其他多余标签页（about:blank / 旧业务页 / 重复标签）
+   *   5. 主页面导航到首页 URL
+   *   6. 首页加载后清理原生 alert / DOM 弹窗
+   *   7. 再次检查是否因导航产生新标签页，如有继续关闭
+   *   8. 返回 mainPage
+   *
+   * 不允许直接复用 Chrome 上次残留的标签页作为工作页。
+   */
+  private async normalizeTabsForWindow(
+    context: import('playwright').BrowserContext,
+    homeUrl: string,
+    tag: string,
+    staffName?: string,
+  ): Promise<import('playwright').Page> {
+    let pages = context.pages();
+    console.log(`${tag} normalizeTabs: 当前 ${pages.length} 个标签页`);
+
+    // 1. 给所有已有页面绑定原生 dialog 清理 + NativeAlertGuard
+    for (const p of pages) {
+      if (!NativeAlertGuard.getInstance().isAttached(p)) {
+        this.attachDialogHandler(p, staffName);
+      }
+    }
+
+    // 2. 优先选一个可用页面作为主页面（优先选业务域名页，其次任意非关闭页）
+    let mainPage: import('playwright').Page | undefined = pages.find(p => {
+      try { return !p.isClosed() && p.url().includes(TARGET_DOMAIN); } catch { return false; }
+    });
+    if (!mainPage) {
+      mainPage = pages.find(p => { try { return !p.isClosed(); } catch { return false; } });
+    }
+
+    // 3. 如无可用页面，新建一个
+    if (!mainPage) {
+      console.log(`${tag} 无可用标签页，新建并导航到首页`);
+      mainPage = await context.newPage();
+      this.attachDialogHandler(mainPage, staffName);
+    }
+
+    // 4. 关闭其他多余标签页（about:blank / 旧业务页 / 重复标签）
+    pages = context.pages();
+    for (const p of pages) {
+      if (p === mainPage) continue;
+      try {
+        const url = p.url();
+        console.log(`${tag} 关闭多余标签页: ${url}`);
+        await p.close({ runBeforeUnload: false }).catch((e: Error) => {
+          console.warn(`${tag} 关闭标签页失败(${url}): ${e.message}`);
+        });
+      } catch (e) {
+        console.warn(`${tag} 关闭标签页异常: ${(e as Error).message}`);
+      }
+    }
+
+    // 5. 主页面无论当前是什么 URL，都恢复到系统首页
+    console.log(`${tag} 主页面导航到首页: ${homeUrl}`);
+    try {
+      await mainPage.goto(homeUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    } catch (e) {
+      console.warn(`${tag} 导航到首页失败: ${(e as Error).message}，尝试 location.href 兜底`);
+      await mainPage.evaluate((url) => { window.location.href = url; }, homeUrl).catch(() => {});
+      await mainPage.waitForTimeout(2000);
+    }
+
+    // 等待页面稳定
+    await mainPage.waitForSelector('.app-container, .el-menu, .el-table', { timeout: 5000 }).catch(() => {});
+    await mainPage.waitForSelector('.el-loading-mask', { state: 'hidden', timeout: 3000 }).catch(() => {});
+
+    // 6. 首页加载后清理原生 alert / DOM 弹窗
+    await drainNativeAlerts(mainPage, {
+      durationMs: 1500,
+      intervalMs: 200,
+      staffName,
+      scope: 'normalize-tabs',
+      log: (level: 'info' | 'warn' | 'error', msg: string) => {
+        if (level === 'warn') console.warn(`${tag}${msg}`);
+        else console[level](`${tag}${msg}`);
+      },
+    }).catch(() => 0);
+    await PopupManager.getInstance().dismissRechargeCancelDialog(mainPage).catch(() => false);
+
+    // 7. 再次检查是否因导航/弹窗产生新标签页，如有继续关闭
+    const afterPages = context.pages();
+    for (const p of afterPages) {
+      if (p === mainPage) continue;
+      try {
+        console.log(`${tag} 导航后关闭新出现的标签页: ${p.url()}`);
+        await p.close({ runBeforeUnload: false }).catch(() => {});
+      } catch { /* ignore */ }
+    }
+
+    const finalUrl = mainPage.url();
+    const finalCount = context.pages().length;
+    console.log(`${tag} 标签页归一化完成: ${finalCount} 个标签页, url=${finalUrl}`);
+    return mainPage;
+  }
+
   private clearRuntimeStateForClose(runtimeKey: string): void {
     this.stateStore.update(runtimeKey, {
       status: 'closed',
@@ -794,6 +1126,10 @@ export class PlaywrightRuntime {
       context: undefined,
       page: undefined,
       error: undefined,
+      // Phase K-3A: 窗口关闭后 CDP endpoint 不再可用，清理标记
+      cdpPort: undefined,
+      cdpEndpoint: undefined,
+      cdpAttachable: false,
     });
   }
 

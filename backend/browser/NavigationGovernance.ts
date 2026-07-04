@@ -7,6 +7,7 @@ import { PageStateManager } from './PageStateManager';
 import { PopupManager } from './PopupManager';
 import { RuntimeMetrics } from '../runtime/RuntimeMetrics';
 import type { WindowCapability } from './PageStateManager';
+import { drainNativeAlerts, forceAcceptCurrentNativeAlert } from './NativeAlertGuard';
 
 // ── 类型定义 ──────────────────────────────────────────
 
@@ -229,8 +230,8 @@ export class NavigationGovernance {
     if (urlSuccess) {
       this.stats.urlFallbackSuccess++;
 
-      // 导航后清理弹窗
-      await PopupManager.getInstance().dismissAll(page, { timeout: 5000, verifyAfter: false });
+      // 导航后清理充值/取消弹窗（短超时，不做全量清理）
+      await PopupManager.getInstance().dismissRechargeCancelDialog(page).catch(() => false);
 
       if (verifyAfter) {
         // 仅做 URL 验证，不调用 ensureReadyForTask（避免 autoFix → navigateViaMenu → navigateTo 无限递归）
@@ -276,6 +277,88 @@ export class NavigationGovernance {
       error: '菜单导航和 URL 直连均失败',
       durationMs: Date.now() - startTime,
     };
+  }
+
+  // ── navigateBusinessPage: URL 优先导航（Phase 5-G-8-1） ──
+  //
+  // 核心策略：
+  // 1. 切换前先快速清理最上层 .el-message-box 的"取 消"
+  // 2. 使用 page.goto 进行目标 URL 导航
+  // 3. 等 URL 进入目标路径
+  // 4. 导航后再清理一次"取 消"
+  // 5. 等目标页面关键元素（.app-container）出现
+  // 不依赖菜单点击，不做全量弹窗清理，失败快速返回
+
+  async navigateBusinessPage(
+    page: Page,
+    capability: WindowCapability,
+  ): Promise<{ success: boolean; method: 'url_direct'; durationMs: number; error?: string }> {
+    const startTime = Date.now();
+    const menuPath = MENU_PATHS[capability];
+    const targetUrl = BASE_URL + menuPath.fallbackUrl;
+    const popupMgr = PopupManager.getInstance();
+
+    // Step 0: 导航前清理 — 先 drain 原生 alert，再清理 DOM 充值弹窗
+    await drainNativeAlerts(page, { durationMs: 1000, intervalMs: 200, scope: 'before-navigation' }).catch(() => 0);
+    await popupMgr.dismissRechargeCancelDialog(page).catch(() => false);
+
+    // Step 1: URL 直接导航
+    let navSuccess = false;
+    try {
+      const response = await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      navSuccess = response !== null && (response.ok === undefined || response.ok());
+    } catch (e) {
+      const errMsg = (e as Error).message;
+      console.warn(`[Navigation] navigateBusinessPage goto 异常: ${errMsg}`);
+      navSuccess = false;
+    }
+
+    if (!navSuccess) {
+      // 尝试 location.href 兜底（不等待load事件）
+      try {
+        await page.evaluate((url) => { window.location.href = url; }, targetUrl).catch(() => {});
+      } catch { /* ignore */ }
+      // 等待URL变化
+      try {
+        await page.waitForURL((url) => isOnTargetPage(url.toString(), menuPath.fallbackUrl), { timeout: 10000 });
+        if (isOnTargetPage(page.url(), menuPath.fallbackUrl)) {
+          navSuccess = true;
+        }
+      } catch { /* timeout */ }
+    }
+
+    // Step 2: 等待 URL 匹配
+    if (navSuccess) {
+      try {
+        await page.waitForURL((url) => isOnTargetPage(url.toString(), menuPath.fallbackUrl), { timeout: 5000 });
+      } catch {
+        if (!isOnTargetPage(page.url(), menuPath.fallbackUrl)) {
+          navSuccess = false;
+        }
+      }
+    }
+
+    if (!navSuccess) {
+      return { success: false, method: 'url_direct', durationMs: Date.now() - startTime, error: `URL导航失败: ${page.url()} -> ${targetUrl}` };
+    }
+
+    // Step 3: 等待页面DOM加载（关键容器出现）
+    await page.waitForSelector('.app-container, .el-table, .el-form, .el-card', { timeout: 5000 }).catch(() => {});
+    await page.waitForSelector('.el-loading-mask', { state: 'hidden', timeout: 5000 }).catch(() => {});
+
+    // Step 4: 导航后清理 — 先 drain 原生 alert（可能在页面加载后才出现），再清理 DOM 充值弹窗
+    await drainNativeAlerts(page, { durationMs: 2000, intervalMs: 200, scope: 'after-navigation' }).catch(() => 0);
+    await popupMgr.dismissRechargeCancelDialog(page).catch(() => false);
+
+    // Step 5: 最终验证URL正确
+    const finalUrl = page.url();
+    if (!isOnTargetPage(finalUrl, menuPath.fallbackUrl)) {
+      console.error(`[Navigation] navigateBusinessPage 最终URL不匹配: ${finalUrl}, 预期: ${menuPath.fallbackUrl}`);
+      return { success: false, method: 'url_direct', durationMs: Date.now() - startTime, error: `最终URL不匹配: ${finalUrl}` };
+    }
+
+    console.log(`[Navigation] navigateBusinessPage 成功: ${finalUrl} (${Date.now() - startTime}ms)`);
+    return { success: true, method: 'url_direct', durationMs: Date.now() - startTime };
   }
 
   // ── navigateByMenu: 菜单导航 ──
@@ -463,11 +546,18 @@ export class NavigationGovernance {
   async navigateByUrl(page: Page, capability: WindowCapability): Promise<boolean> {
     const menuPath = MENU_PATHS[capability];
     const url = BASE_URL + menuPath.fallbackUrl;
+    const popupMgr = PopupManager.getInstance();
 
     try {
+      // Phase 5-G-8-3: 导航前先 drain 原生 alert
+      await drainNativeAlerts(page, { durationMs: 1000, intervalMs: 200, scope: 'before-url-fallback' }).catch(() => 0);
+      await popupMgr.dismissRechargeCancelDialog(page).catch(() => false);
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
       await page.waitForSelector('.app-container, .el-table, .el-form, .el-card', { timeout: 5000 }).catch(() => {});
       await page.waitForSelector('.el-loading-mask', { state: 'hidden', timeout: 10000 }).catch(() => {});
+      // 导航后 drain 原生 alert + DOM 弹窗
+      await drainNativeAlerts(page, { durationMs: 1500, intervalMs: 200, scope: 'after-url-fallback' }).catch(() => 0);
+      await popupMgr.dismissRechargeCancelDialog(page).catch(() => false);
       console.log(`[Navigation] URL 降级成功: ${page.url()}`);
       return true;
     } catch (e) {

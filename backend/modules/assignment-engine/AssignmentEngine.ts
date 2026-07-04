@@ -52,6 +52,7 @@ import type { Assignment, TaskContext, LogFn, ProgressFn, WorkerConnectionHandle
 import type { TaskHandler } from './handlers/TaskHandler';
 import type { TaskLogEntry, WaybillResultStatus } from '../../types/api-contracts';
 import type { Page } from 'playwright';
+import { BusinessPageNavigator } from '../../browser/BusinessPageNavigator';
 
 /** Engine 执行参数 */
 export interface EngineExecuteOptions {
@@ -64,6 +65,8 @@ export interface EngineExecuteOptions {
   handlerTimeoutMs?: number;
   /** Phase 8.2: 旧兼容模式（arrival waybillNos），自动选 worker */
   waybillNos?: string[];
+  /** Phase 5-I-1: 任务原始 inputData，用于解析任务级 dryRun */
+  inputData?: unknown;
 }
 
 // ── 超时常量 ──────────────────────────────────────────
@@ -291,14 +294,16 @@ export class AssignmentEngine {
       taskId, site, taskType, assignments: initialAssignments, handler,
       handlerTimeoutMs = DEFAULT_HANDLER_TIMEOUT_MS,
       waybillNos,
+      inputData,
     } = options;
     console.log(`[Engine.execute] T6 开始: taskId=${taskId} type=${taskType} assignments=${initialAssignments.length} workers=${initialAssignments.map(a => a.staffName).join(',')}`);
     const db = Database.getInstance();
     const pool = BrowserPool.getInstance();
 
-    // Phase 9-dryrun: 从 SettingsManager 读取全局试运行模式（安全默认true）
-    const sm = SettingsManager.getInstance();
-    const dryRunMode = await sm.getDryRunMode();
+    // Phase 5-I-1: 任务级 dryRun 优先，全局 SettingsManager 仅兜底
+    const { browserDryRun: resolvedDryRun, source: dryRunSource } = await SettingsManager.resolveTaskDryRun(inputData);
+    const dryRunMode = resolvedDryRun;
+    console.log(`[Engine.execute] [执行配置] browserDryRun=${dryRunMode}，来源=${dryRunSource}`);
 
     const taskContext: TaskContext = { taskId, site, taskType, dryRunMode };
 
@@ -434,13 +439,14 @@ export class AssignmentEngine {
         console.warn(`[Engine][DB] updateTask(running) legacy mirror failed (task=${taskId}):`, (e as Error).message);
       }
 
-      // Phase 9-dryrun: 记录当前运行模式
+      // Phase 5-I-1: 记录当前运行模式 + dryRun 来源
       const modeLabel = dryRunMode ? '试运行模式（跳过最终提交）' : '真实执行模式';
-      taskLogManager.addLog(taskId, 'info', `当前运行模式：${modeLabel}`, 'Engine');
+      const dryRunLogMsg = `当前运行模式：${modeLabel}，来源=${dryRunSource}`;
+      taskLogManager.addLog(taskId, 'info', dryRunLogMsg, 'Engine');
       pgLogBuffer.push({
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         taskId, timestamp: Date.now(), level: 'info',
-        message: `当前运行模式：${modeLabel}`,
+        message: dryRunLogMsg,
         source: 'Engine',
       });
 
@@ -995,6 +1001,15 @@ export class AssignmentEngine {
         if (assignmentTimeoutId) clearTimeout(assignmentTimeoutId);
         if (busyRenewalTimer) clearInterval(busyRenewalTimer);
         if (timeoutHandle) timeoutHandle.clear();
+        // Phase 5-G-8-4: 任务结束后恢复干净首页（在释放窗口锁之前）
+        try {
+          await BusinessPageNavigator.getInstance().restoreCleanHome(conn.page, {
+            staffName,
+            log: (level, msg) => staffLog(level, msg),
+          });
+        } catch (restoreErr) {
+          staffLog('warning', `任务结束恢复首页异常: ${(restoreErr as Error).message}`);
+        }
         try {
           await conn.release();
         } catch (releaseErr) {

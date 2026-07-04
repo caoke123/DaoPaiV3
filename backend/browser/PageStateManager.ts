@@ -8,6 +8,7 @@ import { PopupManager, type VisiblePopup } from './PopupManager';
 import { SessionManager, AuthenticationError } from './SessionManager';
 import { NavigationGovernance } from './NavigationGovernance';
 import { RuntimeMetrics } from '../runtime/RuntimeMetrics';
+import { drainNativeAlerts, forceAcceptCurrentNativeAlert } from './NativeAlertGuard';
 
 // ── 类型定义 ──────────────────────────────────────────
 
@@ -96,6 +97,8 @@ export interface StateCheckOptions {
   skipSidebarCheck?: boolean;
   autoFix?: boolean;
   maxAutoFixRetries?: number;
+  perfLog?: (message: string) => void;
+  perfLabel?: string;
 }
 
 const BASE_URL = 'https://bnsy.benniaosuyun.com';
@@ -164,6 +167,8 @@ export class PageStateManager {
       skipSidebarCheck: options?.skipSidebarCheck ?? false,
       autoFix: options?.autoFix ?? true,
       maxAutoFixRetries: options?.maxAutoFixRetries ?? 1,
+      perfLog: options?.perfLog ?? (() => {}),
+      perfLabel: options?.perfLabel ?? capability,
     };
 
     const expectedRoute = CAPABILITY_ROUTES[capability];
@@ -171,6 +176,14 @@ export class PageStateManager {
     const popupMgr = PopupManager.getInstance();
     const blockedBy: string[] = [];
     const autoFix = opts.autoFix;
+    const perf = async <T>(label: string, fn: () => Promise<T>): Promise<T> => {
+      const start = Date.now();
+      try {
+        return await fn();
+      } finally {
+        opts.perfLog(`[${opts.perfLabel}] PERF ensureReady.${label} ${Date.now() - start}ms`);
+      }
+    };
 
     // ── Step 1: 登录检查（委托给 SessionManager）──
     const sessionMgr = SessionManager.getInstance();
@@ -178,7 +191,7 @@ export class PageStateManager {
     let sessionExpired = false;
 
     try {
-      await sessionMgr.ensureLoggedIn(page);
+      await perf('login.ensureLoggedIn', () => sessionMgr.ensureLoggedIn(page));
       loginResult = {
         loggedIn: true,
         currentUrl: page.url(),
@@ -188,7 +201,7 @@ export class PageStateManager {
       };
     } catch (e) {
       sessionExpired = true;
-      const sessionCheck = await sessionMgr.checkSession(page);
+      const sessionCheck = await perf('login.checkSessionAfterFailure', () => sessionMgr.checkSession(page));
       loginResult = {
         loggedIn: false,
         currentUrl: sessionCheck.currentUrl,
@@ -203,8 +216,8 @@ export class PageStateManager {
         for (let retry = 0; retry < opts.maxAutoFixRetries; retry++) {
           console.log(`[PageStateManager] autoFix: 自动重登录 (${retry + 1}/${opts.maxAutoFixRetries})`);
           try {
-            await sessionMgr.autoRelogin(page);
-            const verify = await sessionMgr.checkSession(page);
+            await perf('login.autoRelogin', () => sessionMgr.autoRelogin(page));
+            const verify = await perf('login.verifyAfterAutoRelogin', () => sessionMgr.checkSession(page));
             if (verify.state === 'VALID') {
               loginResult.loggedIn = true;
               loginResult.detectedSessionExpired = false;
@@ -220,13 +233,13 @@ export class PageStateManager {
     }
 
     // ── Step 2: 侧边栏检查（先于导航 — 需要展开才能点菜单）──
-    const sidebarResult = await this.ensureSidebarExpanded(page);
+    const sidebarResult = await perf('sidebar.ensureExpanded', () => this.ensureSidebarExpanded(page));
     if (!sidebarResult.expanded) {
       blockedBy.push('SIDEBAR_COLLAPSED');
       if (autoFix) {
         for (let retry = 0; retry < opts.maxAutoFixRetries; retry++) {
           console.log(`[PageStateManager] autoFix: 重试展开侧边栏 (${retry + 1}/${opts.maxAutoFixRetries})`);
-          const retryResult = await this.ensureSidebarExpanded(page);
+          const retryResult = await perf('sidebar.ensureExpandedRetry', () => this.ensureSidebarExpanded(page));
           if (retryResult.expanded) {
             const idx = blockedBy.indexOf('SIDEBAR_COLLAPSED');
             if (idx >= 0) blockedBy.splice(idx, 1);
@@ -236,24 +249,27 @@ export class PageStateManager {
       }
     }
 
-    // ── Step 3: 弹窗检查（先于导航 — 弹窗会遮挡菜单点击）──
-    let popupClean = await popupMgr.ensureClean(page);
+    // ── Step 3: 弹窗检查（先 drain 原生 alert，再清理 DOM 充值弹窗）──
+    await perf('nativeAlert.drainBeforePopupCheck', () => drainNativeAlerts(page, { durationMs: 1000, scope: 'before-popup-check' }).catch(() => 0));
+    await perf('popup.dismissRechargeBeforeCheck', () => popupMgr.dismissRechargeCancelDialog(page).catch(() => false));
+    let popupClean = await perf('popup.ensureCleanBeforeNav', () => popupMgr.ensureClean(page));
     let cleanupAttempted = false;
     let cleanupSucceeded = false;
     if (!popupClean) {
       blockedBy.push('POPUP_BLOCKING');
       if (autoFix) {
         cleanupAttempted = true;
-        const dismissed = await popupMgr.dismissAll(page, { timeout: 8000, verifyAfter: true });
+        await perf('popup.dismissRechargeBeforeFullCleanup', () => popupMgr.dismissRechargeCancelDialog(page).catch(() => false));
+        const dismissed = await perf('popup.dismissAllBeforeNav', () => popupMgr.dismissAll(page, { timeout: 5000, verifyAfter: false }));
         cleanupSucceeded = dismissed >= 0;
-        popupClean = await popupMgr.ensureClean(page);
+        popupClean = await perf('popup.ensureCleanAfterDismissBeforeNav', () => popupMgr.ensureClean(page));
         if (popupClean) {
           const idx = blockedBy.indexOf('POPUP_BLOCKING');
           if (idx >= 0) blockedBy.splice(idx, 1);
         }
       }
     }
-    const visiblePopups = cleanupAttempted ? [] : await popupMgr.inspect(page).catch(() => []);
+    const visiblePopups = cleanupAttempted ? [] : await perf('popup.inspectBeforeNav', () => popupMgr.inspect(page).catch(() => []));
     const popupResult: PopupCheckResult = {
       clean: popupClean,
       visiblePopups,
@@ -261,65 +277,83 @@ export class PageStateManager {
       cleanupSucceeded,
     };
 
-    // ── Step 4: URL 检查 + 菜单优先导航 ──
+    // ── Step 4: URL 检查 + URL 优先导航（Phase 5-G-8-2: dismissRechargeCancelDialog）──
     const navGov = NavigationGovernance.getInstance();
-    let urlResult = await this.checkUrlState(page, expectedRoute);
+    let urlResult = await perf('url.checkInitial', () => this.checkUrlState(page, expectedRoute));
     if (!urlResult.matches) {
       blockedBy.push(urlResult.redirectDetected ? 'LOGIN_EXPIRED' : 'WRONG_PAGE');
       if (autoFix) {
-        for (let retry = 0; retry < opts.maxAutoFixRetries; retry++) {
-          console.log(`[PageStateManager] autoFix: 菜单导航到 ${expectedRoute} (${retry + 1}/${opts.maxAutoFixRetries})`);
+        // Phase 5-G-8-3: WRONG_PAGE 时先 drain 原生 alert，再清理 DOM 弹窗，再 URL 导航
+        await perf('url.drainNativeBeforeNav', () => drainNativeAlerts(page, { durationMs: 1000, scope: 'wrong-page-before-nav' }).catch(() => 0));
+        await perf('url.dismissRechargeBeforeNav', () => popupMgr.dismissRechargeCancelDialog(page).catch(() => false));
 
-          // 策略 1: 菜单优先导航（通过 sidebar 菜单项点击）
-          const navSuccess = await this.navigateViaMenu(page, capability).catch(() => false);
+        const urlNavResult = await perf('url.navigateBusinessPage', () => navGov.navigateBusinessPage(page, capability));
 
-          if (!navSuccess) {
-            // 策略 2: URL 降级（仅在菜单导航失败时）
-            RuntimeMetrics.getInstance().navigationFixed();
-            console.log(`[PageStateManager] 菜单导航失败，降级 URL: ${BASE_URL}${expectedRoute}`);
-            try {
-              await page.goto(BASE_URL + expectedRoute, { waitUntil: 'domcontentloaded', timeout: 15000 });
-              await page.waitForTimeout(3000);
-            } catch { /* ignore */ }
-
-            // URL 导航后可能触发弹窗，清除
-            await popupMgr.dismissAll(page, { timeout: 5000, verifyAfter: false }).catch(() => {});
-          } else {
-            // 菜单导航成功，等待页面加载 + 清除可能弹出的弹窗
-            await page.waitForTimeout(2000);
-            await popupMgr.dismissAll(page, { timeout: 5000, verifyAfter: false }).catch(() => {});
-          }
-
-          urlResult = await this.checkUrlState(page, expectedRoute);
+        if (urlNavResult.success) {
+          await perf('url.dismissRechargeAfterNav', () => popupMgr.dismissRechargeCancelDialog(page).catch(() => false));
+          urlResult = await perf('url.checkAfterUrlNav', () => this.checkUrlState(page, expectedRoute));
           if (urlResult.matches) {
             const idx = blockedBy.indexOf('WRONG_PAGE');
             if (idx >= 0) blockedBy.splice(idx, 1);
-            break;
           }
+        } else {
+          console.warn(`[PageStateManager] URL导航失败(${urlNavResult.error})，降级菜单导航`);
+          await perf('url.dismissRechargeBeforeMenu', () => popupMgr.dismissRechargeCancelDialog(page).catch(() => false));
+          const menuOk = await perf('url.navigateViaMenuFallback', () => this.navigateViaMenu(page, capability).catch(() => false));
+          if (menuOk) {
+            await perf('url.dismissRechargeAfterMenu', () => popupMgr.dismissRechargeCancelDialog(page).catch(() => false));
+            urlResult = await perf('url.checkAfterMenuNav', () => this.checkUrlState(page, expectedRoute));
+            if (urlResult.matches) {
+              const idx = blockedBy.indexOf('WRONG_PAGE');
+              if (idx >= 0) blockedBy.splice(idx, 1);
+            }
+          }
+        }
+
+        if (!urlResult.matches) {
+          const msgBoxVisible = await page.$('.el-message-box:not([style*="display: none"])').catch(() => null) !== null;
+          const payDialogVisible = await page.$('.el-dialog__wrapper.pay-dialog:not([style*="display: none"])').catch(() => null) !== null;
+          console.error(`[PageStateManager] WRONG_PAGE 修复失败: currentUrl=${page.url()}, expected=${expectedRoute}, messageBoxVisible=${msgBoxVisible}, payDialogVisible=${payDialogVisible}`);
         }
       }
     }
 
-    // ── Step 5: 关键元素检查（先关闭弹窗避免遮挡） ──
-    try {
-      await popupMgr.dismissAll(page, { timeout: 5000, verifyAfter: false });
-    } catch { /* ignore */ }
-    let elementResult = await this.checkKeyElements(page, keyElements);
+    // ── Step 5: 关键元素检查（先 drain 原生 alert，再清理 DOM 弹窗） ──
+    await perf('nativeAlert.drainBeforeElementCheck', () => drainNativeAlerts(page, { durationMs: 1000, scope: 'before-element-check' }).catch(() => 0));
+    await perf('popup.dismissRechargeBeforeElementCheck', () => popupMgr.dismissRechargeCancelDialog(page).catch(() => false));
+    let elementResult = await perf('elements.checkKeyElements', () => this.checkKeyElements(page, keyElements));
     if (!elementResult.allPresent) {
       blockedBy.push('ELEMENT_MISSING');
       if (autoFix) {
         for (let retry = 0; retry < opts.maxAutoFixRetries; retry++) {
-          console.log(`[PageStateManager] autoFix: reload 页面 (${retry + 1}/${opts.maxAutoFixRetries})`);
+          console.log(`[PageStateManager] autoFix: 清理弹窗+URL导航修正页面 (${retry + 1}/${opts.maxAutoFixRetries})`);
           try {
-            await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 });
-            await page.waitForTimeout(3000);
-            await popupMgr.dismissAll(page, { timeout: 5000, verifyAfter: false });
+            await drainNativeAlerts(page, { durationMs: 1000, scope: 'element-missing-fix' }).catch(() => 0);
+            await popupMgr.dismissRechargeCancelDialog(page).catch(() => false);
+            await navGov.navigateBusinessPage(page, capability);
+            await drainNativeAlerts(page, { durationMs: 1000, scope: 'element-missing-after-nav' }).catch(() => 0);
+            await popupMgr.dismissRechargeCancelDialog(page).catch(() => false);
           } catch { /* ignore */ }
-          elementResult = await this.checkKeyElements(page, keyElements);
+
+          elementResult = await perf('elements.checkKeyElementsAfterUrlNav', () => this.checkKeyElements(page, keyElements));
           if (elementResult.allPresent) {
             const idx = blockedBy.indexOf('ELEMENT_MISSING');
             if (idx >= 0) blockedBy.splice(idx, 1);
             break;
+          }
+
+          if (retry === opts.maxAutoFixRetries - 1) {
+            console.log(`[PageStateManager] autoFix: reload页面作为最终兜底`);
+            try {
+              await perf('elements.reload', () => page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 }).then(() => undefined));
+              await perf('elements.reloadSettle', () => page.waitForTimeout(2000));
+              await perf('popup.dismissRechargeAfterReload', () => popupMgr.dismissRechargeCancelDialog(page).catch(() => false));
+            } catch { /* ignore */ }
+            elementResult = await perf('elements.checkKeyElementsAfterReload', () => this.checkKeyElements(page, keyElements));
+            if (elementResult.allPresent) {
+              const idx = blockedBy.indexOf('ELEMENT_MISSING');
+              if (idx >= 0) blockedBy.splice(idx, 1);
+            }
           }
         }
       }
@@ -515,6 +549,7 @@ export class PageStateManager {
     if (!result.remediation?.autoFixable) return false;
 
     const popupMgr = PopupManager.getInstance();
+    const navGov = NavigationGovernance.getInstance();
     const action = result.remediation.action;
 
     switch (action) {
@@ -527,8 +562,16 @@ export class PageStateManager {
         }
       case 'navigate':
         try {
+          // Phase 5-G-8-2: 使用URL优先导航，带前后充值/取消弹窗清理
+          await popupMgr.dismissRechargeCancelDialog(page).catch(() => false);
+          const cap = this.getCapabilityFromRoute(result.url.expected);
+          if (cap) {
+            const navResult = await navGov.navigateBusinessPage(page, cap);
+            if (navResult.success) return true;
+          }
           await page.goto(BASE_URL + result.url.expected, { waitUntil: 'domcontentloaded', timeout: 15000 });
-          await page.waitForTimeout(3000);
+          await page.waitForTimeout(2000);
+          await popupMgr.dismissRechargeCancelDialog(page).catch(() => false);
           return true;
         } catch {
           return false;
@@ -541,8 +584,16 @@ export class PageStateManager {
         return true;
       case 'reload':
         try {
+          // Phase 5-G-8-2: reload前先尝试URL导航修正+弹窗清理
+          await popupMgr.dismissRechargeCancelDialog(page).catch(() => false);
+          const cap = this.getCapabilityFromRoute(result.url.expected);
+          if (cap) {
+            const navResult = await navGov.navigateBusinessPage(page, cap);
+            if (navResult.success) return true;
+          }
           await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 });
-          await page.waitForTimeout(3000);
+          await page.waitForTimeout(2000);
+          await popupMgr.dismissRechargeCancelDialog(page).catch(() => false);
           return true;
         } catch {
           return false;
@@ -550,5 +601,13 @@ export class PageStateManager {
       default:
         return false;
     }
+  }
+
+  /** 根据路由路径反查 WindowCapability */
+  private getCapabilityFromRoute(route: string): WindowCapability | null {
+    for (const [cap, path] of Object.entries(CAPABILITY_ROUTES)) {
+      if (path === route) return cap as WindowCapability;
+    }
+    return null;
   }
 }

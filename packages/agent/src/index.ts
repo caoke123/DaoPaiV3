@@ -6,6 +6,7 @@
  */
 
 import { loadConfig } from './config';
+import { execSync } from 'node:child_process';
 import { initLogger, logger, safeLog } from './logger';
 import { startupCheck } from './startupCheck';
 import {
@@ -20,11 +21,30 @@ import {
   failTask,
 } from './httpClient';
 import { AgentSettingsLoader } from './AgentSettingsLoader';
+import { executeArrivalDryRun } from './executors/ArrivalExecutor';
+import { executeDispatchDryRun } from './executors/DispatchExecutor';
+import { executeSignDryRun } from './executors/SignExecutor';
+import { executeIntegratedDryRun } from './executors/IntegratedExecutor';
 import type { AxiosInstance } from 'axios';
 import type { AgentConfig } from './types';
 
 let shuttingDown = false;
 let runningTaskId: string | null = null;
+
+function getRuntimeGitHash(): string {
+  try {
+    return execSync('git rev-parse --short HEAD', { cwd: process.cwd(), encoding: 'utf-8' }).trim();
+  } catch {
+    return 'unknown';
+  }
+}
+
+function logAgentRuntimeProof(): void {
+  console.log(`[RuntimeProof][Agent] phase=K-3A-2 arrivalReadyTakeover=true buildTime=${new Date().toISOString()} git=${getRuntimeGitHash()}`);
+  console.log(`[RuntimeProof][Agent] phase=K-3B dispatchReadyTakeover=true buildTime=${new Date().toISOString()} git=${getRuntimeGitHash()}`);
+  console.log(`[RuntimeProof][Agent] phase=K-3C signReadyTakeover=true buildTime=${new Date().toISOString()} git=${getRuntimeGitHash()}`);
+  console.log(`[RuntimeProof][Agent] phase=K-3D integratedReadyTakeover=true buildTime=${new Date().toISOString()} git=${getRuntimeGitHash()}`);
+}
 
 async function executeAgentTestTask(
   client: AxiosInstance,
@@ -126,11 +146,31 @@ async function executeBusinessTaskWithBackendEngine(
   logBusinessTaskPayload(task);
   const label = `Agent-run-engine-${task.taskId}`;
   console.time(label);
+
+  // Phase 5-J-1: 从 payload.assignments 提取 staffName/windowId 用于日志上下文
+  // 字段缺失时允许为空，但必须记录 warn 日志说明来源缺失（避免日志静默落入全局区）
+  const assignments = Array.isArray((task.payload as any)?.assignments) ? (task.payload as any).assignments : [];
+  const firstStaff = assignments[0]?.staffName || '';
+  const firstWindowId = assignments[0]?.windowId || '';
+
+  if (!firstStaff) {
+    logger.warn(`[Agent日志] staffName 来源缺失：task=${task.taskId} assignments.length=${assignments.length}，日志将降级到全局区`);
+  }
+  if (!firstWindowId) {
+    logger.warn(`[Agent日志] windowId 来源缺失：task=${task.taskId} assignments.length=${assignments.length}，日志将降级到全局区`);
+  }
+
+  console.log(`[Agent日志] 上传日志：staffName=${firstStaff || '(空)'}, windowId=${firstWindowId || '(空)'}, siteId=${task.siteId || '(空)'}, count=1`);
+
   await uploadLogs(client, task.taskId, [{
     level: 'info',
-    message: `Agent 收到业务任务，移交后端员工窗口引擎执行：type=${task.type}`,
+    message: `[兼容路径] 任务类型 ${task.type} 暂未迁移，继续使用 Cloud run-engine 兼容路径。正式方向是 Agent 本地执行；Arrival 已从 Phase K-2A 开始迁移。`,
     timestamp: new Date().toISOString(),
+    staffName: firstStaff,
+    windowId: firstWindowId,
+    siteId: task.siteId,
   }]);
+
   console.time(`Agent-run-engine-POST-${task.taskId}`);
   await runTaskWithBackendEngine(client, task.taskId);
   console.timeEnd(`Agent-run-engine-POST-${task.taskId}`);
@@ -142,6 +182,7 @@ async function main(): Promise<void> {
   console.log('  DaoPai 本地执行端 v0.1.0');
   console.log('  当前阶段：任务管道最小闭环，模拟执行');
   console.log('========================================');
+  logAgentRuntimeProof();
   console.log('');
 
   // 1. 加载配置
@@ -217,6 +258,8 @@ async function main(): Promise<void> {
           if (pullResp.hasTask && pullResp.task) {
             const task = pullResp.task;
             console.log(`[Agent] T3 拉到任务: taskId=${task.taskId} type=${task.type} siteId=${task.siteId}`);
+            const assignments = Array.isArray((task.payload as any)?.assignments) ? (task.payload as any).assignments : [];
+            console.log(`[Agent] pulled task: id=${task.taskId}, type=${task.type}, assignments=${assignments.length}`);
 
             // agent_test 任务
             if (task.type === 'agent_test') {
@@ -224,16 +267,53 @@ async function main(): Promise<void> {
               await executeAgentTestTask(client, task.taskId, task.payload);
               runningTaskId = null;
             }
-            // 业务页任务：交给后端 AssignmentEngine 驱动所选员工窗口
-            else if (['arrival', 'dispatch', 'integrated', 'sign'].includes(task.type)) {
+            // Phase K-2A: Arrival 已迁回 Agent 本地执行器。
+            // 这是 V3 正式方向：Cloud 只创建任务/保存状态，浏览器动作发生在 Agent 进程内。
+            else if (task.type === 'arrival' || task.type === 'arrive' || (task as any).taskType === 'arrival' || (task as any).taskType === 'arrive') {
+              console.log(`[Agent] 收到 Arrival 任务，使用 Agent 本地执行器`);
+              console.log(`[Agent] Arrival 本地执行开始，taskId=${task.taskId}`);
+              logger.info(`[Agent] 收到 Arrival 任务，使用 Agent 本地执行器 taskId=${task.taskId}`);
+              runningTaskId = task.taskId;
+              await executeArrivalDryRun(task as any, client, settingsLoader, config);
+              console.log(`[Agent] Arrival 本地执行结束，taskId=${task.taskId}`);
+              runningTaskId = null;
+            }
+            // Phase K-2B: Dispatch 已迁回 Agent 本地执行器。
+            else if (task.type === 'dispatch' || (task as any).taskType === 'dispatch') {
+              console.log(`[Agent] 收到 Dispatch 任务，使用 Agent 本地执行器`);
+              console.log(`[Agent] Dispatch 本地执行开始，taskId=${task.taskId}`);
+              logger.info(`[Agent] 收到 Dispatch 任务，使用 Agent 本地执行器 taskId=${task.taskId}`);
+              runningTaskId = task.taskId;
+              await executeDispatchDryRun(task as any, client, settingsLoader, config);
+              console.log(`[Agent] Dispatch 本地执行结束，taskId=${task.taskId}`);
+              runningTaskId = null;
+            }
+            // Phase K-2D: Sign 已迁回 Agent 本地执行器。
+            else if (task.type === 'sign' || (task as any).taskType === 'sign') {
+              console.log(`[Agent] 收到 Sign 任务，使用 Agent 本地执行器`);
+              console.log(`[Agent][Sign] 本地执行开始，taskId=${task.taskId}`);
+              logger.info(`[Agent] 收到 Sign 任务，使用 Agent 本地执行器 taskId=${task.taskId}`);
+              runningTaskId = task.taskId;
+              await executeSignDryRun(task as any, client, settingsLoader, config);
+              console.log(`[Agent] Sign 本地执行结束，taskId=${task.taskId}`);
+              runningTaskId = null;
+            }
+            // Phase K-2D: Integrated 已迁回 Agent 本地执行器。
+            else if (task.type === 'integrated' || (task as any).taskType === 'integrated') {
+              console.log(`[Agent] 收到 Integrated 任务，使用 Agent 本地执行器`);
+              console.log(`[Agent][Integrated] 本地执行开始，taskId=${task.taskId}`);
+              logger.info(`[Agent] 收到 Integrated 任务，使用 Agent 本地执行器 taskId=${task.taskId}`);
+              runningTaskId = task.taskId;
+              await executeIntegratedDryRun(task as any, client, settingsLoader, config);
+              console.log(`[Agent] Integrated 本地执行结束，taskId=${task.taskId}`);
+              runningTaskId = null;
+            }
+            // 未识别任务类型：保留 run-engine 兼容路径，由 Cloud 端判断是否支持。
+            else {
+              console.log(`[Agent] 任务类型 ${task.type} 未识别，继续使用 Cloud run-engine 兼容路径`);
               runningTaskId = task.taskId;
               await executeBusinessTaskWithBackendEngine(client, task);
               runningTaskId = null;
-            }
-            // 未知任务类型
-            else {
-              logger.warn(`未知任务类型：${task.type}，上报失败`);
-              await failTask(client, task.taskId, `未知任务类型：${task.type}`).catch(() => {});
             }
           }
         } catch (err) {

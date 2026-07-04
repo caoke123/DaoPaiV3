@@ -440,6 +440,8 @@ export async function submitTask(
   api: string,
   payload: Record<string, unknown>,
 ): Promise<TaskSubmitResponse> {
+  const t0 = performance.now();
+  console.log(`[TaskStartTiming] T1 POST ${api} 发出`);
   const resp = await fetchWithAuth(api, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -454,6 +456,7 @@ export async function submitTask(
   if (!taskId) {
     throw new Error('任务创建成功但后端未返回 taskId');
   }
+  console.log(`[TaskStartTiming] T2 返回 taskId=${taskId} submitMs=${Math.round(performance.now() - t0)}`);
   return { ...data, taskId };
 }
 
@@ -578,6 +581,29 @@ export async function getTaskStatus(taskId: string): Promise<{
   return resp.json();
 }
 
+/** 查询任务完整详情（含 inputData、assignments） */
+export interface TaskDetailResponse {
+  taskId: string;
+  type: string;
+  site: string;
+  siteName: string;
+  status: string;
+  totalCount: number;
+  doneCount: number;
+  failCount: number;
+  createdAt: string;
+  finishedAt: string | null;
+  updatedAt: string;
+  inputData: Record<string, unknown> | null;
+  assignments: Array<{ staffName: string; count?: number }>;
+}
+
+export async function getTaskDetail(taskId: string): Promise<TaskDetailResponse> {
+  const resp = await fetchWithAuth(`${BASE}/tasks/${encodeURIComponent(taskId)}`);
+  if (!resp.ok) throw new Error(`查询任务详情失败: HTTP ${resp.status}`);
+  return resp.json();
+}
+
 /** 查询任务运单明细（从 PG waybill_results 表，支持 status + staffName 过滤） */
 export async function getTaskWaybills(
   taskId: string,
@@ -680,6 +706,31 @@ export async function batchDeleteTasks(taskIds: string[]): Promise<BatchDeleteRe
     body: JSON.stringify({ taskIds }),
   });
   if (!resp.ok) throw new Error(`删除任务失败: HTTP ${resp.status}`);
+  return resp.json();
+}
+
+// ── Phase K-3A-2-Prep: 任务重置 API ──
+
+export interface ResetTasksResponse {
+  ok: boolean;
+  deleted: {
+    tasks: number;
+    task_logs: number;
+    waybill_results: number;
+  };
+  message: string;
+}
+
+export async function resetAllTasks(): Promise<ResetTasksResponse> {
+  const resp = await fetchWithAuth(`${BASE}/admin/tasks/reset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirm: 'RESET_TASKS', scope: 'all' }),
+  });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error((body as any).message || `清理任务失败: HTTP ${resp.status}`);
+  }
   return resp.json();
 }
 

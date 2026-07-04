@@ -11,6 +11,12 @@ const BASE_URL = 'https://bnsy.benniaosuyun.com';
 // 截图保存目录（bnsy-operator-next: runtime/screenshots，与生产项目 logs/screenshots 隔离）
 const SCREENSHOT_DIR = path.join(process.cwd(), 'runtime', 'screenshots');
 
+/** Phase 5-G-8: 全局截图开关。默认关闭，设置 ENABLE_RUNTIME_SCREENSHOTS=1 开启 */
+function isScreenshotEnabled(): boolean {
+  return process.env.ENABLE_RUNTIME_SCREENSHOTS === '1'
+    || process.env.ENABLE_RUNTIME_SCREENSHOTS === 'true';
+}
+
 /**
  * 导航到指定路由
  * 基础 URL: https://bnsy.benniaosuyun.com
@@ -78,11 +84,15 @@ export async function waitForToast(page: Page, timeoutMs = 15000): Promise<strin
 
 /**
  * 截图保存到 ./logs/screenshots/ 目录
+ *
+ * Phase 5-G-8: 默认关闭截图。设置 ENABLE_RUNTIME_SCREENSHOTS=1 可重新开启。
+ *
  * @param page Playwright Page 对象
  * @param label 截图标签（如 "arrive_start"）
- * @returns 截图文件相对路径
+ * @returns 截图文件相对路径（关闭时返回空字符串）
  */
 export async function takeScreenshot(page: Page, label: string): Promise<string> {
+  if (!isScreenshotEnabled()) return '';
   fs.ensureDirSync(SCREENSHOT_DIR);
   // 本地时间格式化: yyyyMMdd_HHmmss
   const now = new Date();
@@ -99,6 +109,8 @@ export async function takeScreenshot(page: Page, label: string): Promise<string>
 /**
  * Phase G-2: 失败自动截图
  *
+ * Phase 5-G-8: 默认关闭截图。设置 ENABLE_RUNTIME_SCREENSHOTS=1 可重新开启。
+ *
  * 所有 Scan 模块（ArrivalScan/DispatchScan/IntegratedScan/SignScan）异常捕获时统一调用。
  * 文件名格式：YYYYMMDD-HHmmss-taskId-step.png
  * 保存目录：logs/screenshots
@@ -106,13 +118,14 @@ export async function takeScreenshot(page: Page, label: string): Promise<string>
  * @param page Playwright Page 对象
  * @param taskId 任务ID
  * @param step 失败步骤标识（如 "batch1_navigation"）
- * @returns 截图文件相对路径；截图失败返回空字符串
+ * @returns 截图文件相对路径；截图失败或关闭时返回空字符串
  */
 export async function captureFailureScreenshot(
   page: Page,
   taskId: string,
   step: string,
 ): Promise<string> {
+  if (!isScreenshotEnabled()) return '';
   try {
     fs.ensureDirSync(SCREENSHOT_DIR);
     const now = new Date();
@@ -123,7 +136,7 @@ export async function captureFailureScreenshot(
     const fileName = `${timestamp}-${safeTaskId}-${safeStep}.png`;
     const filePath = path.join(SCREENSHOT_DIR, fileName);
     await page.screenshot({ path: filePath, fullPage: false, timeout: 5000 });
-    console.log(`[Screenshot] 异常截图已保存 路径: runtime/screenshots/${fileName}`);
+    console.log(`[Screenshot] 截图已保存 路径: runtime/screenshots/${fileName}`);
     return `runtime/screenshots/${fileName}`;
   } catch (e) {
     console.warn(`[Screenshot] 失败截图异常 ${step}:`, (e as Error).message);

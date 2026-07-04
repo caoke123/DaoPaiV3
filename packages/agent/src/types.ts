@@ -24,6 +24,12 @@ export interface BnsyConfig {
 export interface AgentConfig {
   /** Cloud 后端地址 */
   cloudBaseUrl: string;
+  /** Cloud 后端地址别名（配置样例兼容 V3 原始文档命名） */
+  cloudApiUrl?: string;
+  /** 租户编号（用于本地日志/配置展示，鉴权仍以 Agent Token 为准） */
+  tenantId?: string;
+  /** 执行电脑编号（用于本地日志/配置展示，鉴权仍以 Agent Token 为准） */
+  workstationId?: string;
   /** 执行电脑授权码（明文） */
   agentToken: string;
   /** 执行电脑名称 */

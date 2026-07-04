@@ -10,7 +10,7 @@ export interface OperationResult {
   message: string;        // 结果消息（成功提示/失败原因/异常信息）
   timestamp: number;      // 操作时间戳（毫秒）
   /** C1-2/C1-3: 详细状态，区分 SUCCESS/PARTIAL/FAILED/UNKNOWN_NEEDS_MANUAL_CHECK */
-  status?: 'SUCCESS' | 'PARTIAL' | 'FAILED' | 'UNKNOWN_NEEDS_MANUAL_CHECK' | 'DRY_RUN_SKIPPED';
+  status?: 'SUCCESS' | 'PARTIAL' | 'FAILED' | 'UNKNOWN_NEEDS_MANUAL_CHECK' | 'DRY_RUN_SKIPPED' | 'SAFETY_GATE_SKIPPED';
   /** 派件扫描：归属员工姓名（到件扫描不使用） */
   staffName?: string;
   /** Phase 9-dryrun: 是否为试运行模式跳过真实提交 */

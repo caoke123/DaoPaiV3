@@ -14,14 +14,14 @@
  *       4. button:has-text("立即登录")
  *       5. button[type="submit"]
  *
- * Phase 4-E: 登录后弹窗清理
- *   - 点击登录前注册 dialog handler 自动 accept 原生 alert（如"网点余额低于警戒金额!"）
- *   - 登录后 20s 等待期间循环执行 PopupManager.dismissAll() 清理 DOM 弹窗
+ * 登录后守卫策略（Phase 5-G-8-3）：
+ *   - 登录阶段使用 NativeAlertGuard drain 原生 alert（如"网点余额低于警戒金额!"）
+ *   - 点击登录前 forceAccept 一次，登录后 drain 2000ms
+ *   - 未进入 dashboard 再 forceAccept 重试一次，仍失败才关闭窗口重登
  */
 import type { Page, Cookie } from 'playwright';
 import {
   TARGET_DOMAIN,
-  TARGET_DASHBOARD,
   TARGET_LOGIN_PAGE_HINTS,
   type PlaywrightCredential,
   type PlaywrightLoginResult,
@@ -31,6 +31,7 @@ import {
   type SessionDebugInfo,
 } from './types';
 import { PopupManager } from '../browser/PopupManager';
+import { NativeAlertGuard, drainNativeAlerts, forceAcceptCurrentNativeAlert } from '../browser/NativeAlertGuard';
 
 /** 笨鸟速运系统可能使用的 localStorage token key 名（按优先级） */
 const JWT_STORAGE_KEY_CANDIDATES = [
@@ -65,14 +66,10 @@ export class PlaywrightLoginVerifier {
     return true;
   }
 
-  /**
-   * 等待登录跳转完成
-   * 规则：URL 不再包含 /login / Login，超时则失败
-   */
-  async waitForLoginRedirect(page: Page, timeoutMs = 20000): Promise<boolean> {
+  async waitForDashboardReady(page: Page, timeoutMs = 3000): Promise<boolean> {
     try {
       await page.waitForFunction(
-        () => !window.location.href.includes('/login') && !window.location.href.includes('Login'),
+        () => window.location.href.includes('/dashboard'),
         { timeout: timeoutMs },
       );
       return true;
@@ -155,12 +152,31 @@ export class PlaywrightLoginVerifier {
     await passwordInput.fill(cred.password);
     console.log(`${tag} 已填入账号密码: ${cred.account}`);
 
-    // Phase 4-E: 点击登录前注册 dialog handler，自动关闭原生 alert（如"网点余额低于警戒金额!"）
+    // Phase 5-G-8-3: 登录守卫策略改为 drain 原生弹窗
+    // 不再 suspendDialogHandling，而是主动清理 alert
     const popupMgr = PopupManager.getInstance();
-    popupMgr.register(page);
-    console.log(`${tag} [Popup] 已监听登录后弹窗`);
+    // 确保 NativeAlertGuard 已挂载（page 创建时已挂载，这里兜底）
+    if (!NativeAlertGuard.getInstance().isAttached(page)) {
+      NativeAlertGuard.getInstance().attachNativeAlertGuard(page, {
+        scope: 'login',
+        log: (level, msg) => {
+          if (level === 'warn') console.warn(`${tag}${msg}`);
+          else console[level](`${tag}${msg}`);
+        },
+      });
+    }
+    console.log(`${tag} [LoginGuard] 登录阶段启用 NativeAlertGuard drain 策略`);
 
-    // 4. 点击登录按钮
+    // 4. 点击登录前先 forceAccept 一次（可能有登录前的 alert）
+    await forceAcceptCurrentNativeAlert(page, {
+      scope: 'before-login-click',
+      log: (level, msg) => {
+        if (level === 'warn') console.warn(`${tag}${msg}`);
+        else console[level](`${tag}${msg}`);
+      },
+    }).catch(() => {});
+
+    // 5. 点击登录按钮
     const loginButton = await this.findLoginButton(page);
     if (!loginButton) {
       return {
@@ -172,46 +188,44 @@ export class PlaywrightLoginVerifier {
     }
 
     await loginButton.click();
-    console.log(`${tag} 已点击登录按钮，等待跳转...`);
+    console.log(`${tag} 已点击登录按钮，drain 原生弹窗并等待进入首页...`);
 
-    // Phase 4-E: 登录后弹窗清理窗口 — 在等待跳转期间循环清理 DOM 弹窗
-    const jumpStart = Date.now();
-    const jumpTimeout = 20000;
+    // 6. 登录后 drain 原生弹窗（alert 可能延迟出现）
+    await drainNativeAlerts(page, {
+      durationMs: 2000,
+      intervalMs: 200,
+      scope: 'after-login',
+      log: (level, msg) => {
+        if (level === 'warn') console.warn(`${tag}${msg}`);
+        else console[level](`${tag}${msg}`);
+      },
+    }).catch(() => 0);
 
-    // 5. 等待跳转（带弹窗清理）
-    const redirected = await Promise.race([
-      this.waitForLoginRedirect(page, jumpTimeout).then(r => r),
-      (async () => {
-        while (Date.now() - jumpStart < jumpTimeout) {
-          await page.waitForTimeout(2000).catch(() => {});
-          await popupMgr.dismissAll(page, { timeout: 3000, maxRounds: 2, verifyAfter: false }).catch(() => {});
-        }
-        return false;
-      })(),
-    ]);
+    // 7. 检查是否进入 dashboard
+    const dashboardReady = await this.waitForDashboardReady(page, 3000);
 
-    if (!redirected) {
-      return {
-        success: false,
-        reason: 'timeout',
-        finalUrl: page.url(),
-        message: `${tag} 登录后 20s 内未跳转，URL: ${page.url()}`,
-      };
+    if (!dashboardReady) {
+      // 再 forceAccept 一次，可能 alert 刚出现
+      await forceAcceptCurrentNativeAlert(page, {
+        scope: 'dashboard-retry',
+        log: (level, msg) => {
+          if (level === 'warn') console.warn(`${tag}${msg}`);
+          else console[level](`${tag}${msg}`);
+        },
+      }).catch(() => {});
+      const retryReady = await this.waitForDashboardReady(page, 2000);
+      if (!retryReady) {
+        return {
+          success: false,
+          reason: 'timeout',
+          finalUrl: page.url(),
+          message: `${tag} 登录后未进入首页（已 drain 原生弹窗），URL: ${page.url()}`,
+        };
+      }
     }
 
     const afterLoginUrl = page.url();
     console.log(`${tag} 登录成功，当前 URL: ${afterLoginUrl}`);
-
-    // 6. 导航到 /dashboard（如果不在）
-    if (!afterLoginUrl.includes('/dashboard')) {
-      console.log(`${tag} 当前不在 /dashboard，导航...`);
-      await page.goto(TARGET_DASHBOARD, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => {
-        console.warn(`${tag} 导航到 /dashboard 失败: ${(e as Error).message}`);
-      });
-    }
-
-    // Phase 4-E: 登录完成后最终弹窗清理
-    await popupMgr.dismissAll(page, { timeout: 5000, maxRounds: 3, verifyAfter: false }).catch(() => {});
 
     return {
       success: true,

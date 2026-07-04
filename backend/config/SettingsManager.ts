@@ -294,6 +294,49 @@ export class SettingsManager {
   }
 
   /**
+   * Phase 5-I-1: 统一解析任务级 dryRun
+   *
+   * 优先级：
+   *   1. inputData.browserDryRun（任务级，前端传入，routes 层写入）
+   *   2. inputData.dryRunMode（兼容字段，前端原始字段名）
+   *   3. inputData.dryRun（兼容字段）
+   *   4. SettingsManager.getDryRunMode()（全局兜底）
+   *
+   * 返回 browserDryRun boolean 和来源标识
+   */
+  static async resolveTaskDryRun(inputData: unknown): Promise<{ browserDryRun: boolean; source: string }> {
+    const data = inputData as Record<string, unknown> | null | undefined;
+
+    if (data && typeof data.browserDryRun === 'boolean') {
+      return { browserDryRun: data.browserDryRun, source: 'task.inputData.browserDryRun' };
+    }
+
+    if (data && typeof data.dryRunMode === 'boolean') {
+      return { browserDryRun: data.dryRunMode, source: 'task.inputData.dryRunMode' };
+    }
+
+    if (data && typeof data.dryRun === 'boolean') {
+      return { browserDryRun: data.dryRun, source: 'task.inputData.dryRun' };
+    }
+
+    // 全局兜底
+    const sm = SettingsManager.getInstance();
+    const globalDryRun = await sm.getDryRunMode();
+    return { browserDryRun: globalDryRun, source: 'SettingsManager fallback' };
+  }
+
+  /**
+   * Phase 5-I-1: 真实提交安全门
+   *
+   * 当 dryRun=false 时，检查是否允许真实提交。
+   * 需要环境变量 ENABLE_REAL_SUBMIT=true 才允许。
+   * 默认 false（安全优先）。
+   */
+  static isRealSubmitAllowed(): boolean {
+    return process.env.ENABLE_REAL_SUBMIT === 'true';
+  }
+
+  /**
    * 设置试运行模式
    */
   async setDryRunMode(enabled: boolean): Promise<void> {

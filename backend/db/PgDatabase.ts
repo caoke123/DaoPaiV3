@@ -269,6 +269,63 @@ export class PgDatabase {
     );
   }
 
+  /**
+   * 为执行引擎原子认领任务。
+   *
+   * local-api 只能认领 pending，避免重复执行已由 Agent 或其它本机路径接管的任务。
+   * agent-engine 在 /tasks/pull 已经把任务置为 assigned，因此允许 assigned 继续进入引擎。
+   */
+  async claimTaskForEngine(
+    tenantId: string,
+    taskId: string,
+    source: 'local-api' | 'agent-engine',
+    workstationId: string = DEFAULT_WORKSTATION_ID,
+  ): Promise<{
+    id: string;
+    type: string;
+    site: string;
+    siteName: string;
+    status: string;
+    totalCount: number;
+    doneCount: number;
+    failCount: number;
+    createdAt: string;
+    finishedAt: string | null;
+    inputData?: unknown;
+  } | null> {
+    const allowedStatus = source === 'agent-engine' ? 'assigned' : 'pending';
+    const result = await this.pool.query(
+      `UPDATE tasks
+       SET status = 'assigned',
+           workstation_id = COALESCE($4, workstation_id),
+           assigned_at = COALESCE(assigned_at, NOW()),
+           updated_at = NOW()
+       WHERE id = $1
+         AND tenant_id = $2
+         AND status = $3
+       RETURNING id, type, site_id, status, total_count, done_count, fail_count, created_at, finished_at, input_data`,
+      [taskId, tenantId, allowedStatus, workstationId],
+    );
+
+    if (result.rows.length === 0) return null;
+    const row = result.rows[0] as any;
+    return {
+      id: row.id,
+      type: row.type,
+      site: row.site_id,
+      siteName: row.site_id,
+      status: row.status,
+      totalCount: row.total_count,
+      doneCount: row.done_count,
+      failCount: row.fail_count,
+      createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+      finishedAt: row.finished_at
+        ? (row.finished_at instanceof Date ? row.finished_at.toISOString() : String(row.finished_at))
+        : null,
+      inputData: row.input_data,
+    };
+  }
+
   // ══════════════════════════════════════════════════════════
   // 2b. getTaskList() — 分页查询任务列表
   // ══════════════════════════════════════════════════════════
@@ -766,6 +823,81 @@ export class PgDatabase {
       return {
         success: validIds.length,
         skipped,
+        deletedWaybills: parseInt(wrResult.rows[0].cnt, 10),
+        deletedLogs: parseInt(logResult.rows[0].cnt, 10),
+      };
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════
+  // 2g. resetAllTasks() — Phase K-3A-2-Prep: 清空当前租户所有任务数据
+  // ══════════════════════════════════════════════════════════
+
+  /**
+   * 清空当前租户所有任务相关数据（tasks + task_logs + waybill_results）
+   * 仅用于 E2E 测试前重置环境，不删站点/员工/窗口配置。
+   */
+  async resetAllTasks(
+    tenantId: string = DEFAULT_TENANT_ID,
+  ): Promise<{
+    deletedTasks: number;
+    deletedWaybills: number;
+    deletedLogs: number;
+  }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // 统计将要删除的数据
+      const taskCountResult = await client.query<{ cnt: string }>(
+        `SELECT COUNT(*)::text AS cnt FROM tasks WHERE tenant_id = $1`,
+        [tenantId]
+      );
+      const wrCountResult = await client.query<{ cnt: string }>(
+        `SELECT COUNT(*)::text AS cnt FROM waybill_results WHERE tenant_id = $1`,
+        [tenantId]
+      );
+      const logCountResult = await client.query<{ cnt: string }>(
+        `SELECT COUNT(*)::text AS cnt FROM task_logs WHERE tenant_id = $1`,
+        [tenantId]
+      );
+
+      const expectedTasks = parseInt(taskCountResult.rows[0].cnt, 10);
+
+      if (expectedTasks === 0) {
+        await client.query('COMMIT');
+        return { deletedTasks: 0, deletedWaybills: 0, deletedLogs: 0 };
+      }
+
+      // 先删子表，再删主表（虽然有 ON DELETE CASCADE，显式删除更安全可靠）
+      const logResult = await client.query<{ cnt: string }>(
+        `WITH deleted AS (
+           DELETE FROM task_logs WHERE tenant_id = $1 RETURNING 1
+         ) SELECT COUNT(*)::text AS cnt FROM deleted`,
+        [tenantId]
+      );
+      const wrResult = await client.query<{ cnt: string }>(
+        `WITH deleted AS (
+           DELETE FROM waybill_results WHERE tenant_id = $1 RETURNING 1
+         ) SELECT COUNT(*)::text AS cnt FROM deleted`,
+        [tenantId]
+      );
+      const taskResult = await client.query<{ cnt: string }>(
+        `WITH deleted AS (
+           DELETE FROM tasks WHERE tenant_id = $1 RETURNING 1
+         ) SELECT COUNT(*)::text AS cnt FROM deleted`,
+        [tenantId]
+      );
+
+      await client.query('COMMIT');
+
+      return {
+        deletedTasks: parseInt(taskResult.rows[0].cnt, 10),
         deletedWaybills: parseInt(wrResult.rows[0].cnt, 10),
         deletedLogs: parseInt(logResult.rows[0].cnt, 10),
       };
@@ -1360,18 +1492,27 @@ export class PgDatabase {
       return false;
     }
 
+    // 动态导入密码模块（避免循环依赖）
+    const { hashPassword, verifyPassword } = await import('../auth/password');
+    const passwordHash = await hashPassword(password);
+
     // 检查是否已存在
     const existing = await this.pool.query(
-      `SELECT id FROM users WHERE tenant_id = $1 AND username = $2`,
+      `SELECT id, password_hash FROM users WHERE tenant_id = $1 AND username = $2`,
       [DEFAULT_TENANT_ID, username]
     );
     if (existing.rows.length > 0) {
-      return true; // 已存在，无需创建
+      const storedHash = existing.rows[0].password_hash;
+      const matches = await verifyPassword(password, storedHash).catch(() => false);
+      if (!matches) {
+        await this.pool.query(
+          `UPDATE users SET password_hash = $1 WHERE tenant_id = $2 AND username = $3`,
+          [passwordHash, DEFAULT_TENANT_ID, username]
+        );
+        console.log(`[PG] 默认管理员密码已同步更新: ${username}`);
+      }
+      return true;
     }
-
-    // 动态导入密码模块（避免循环依赖）
-    const { hashPassword } = await import('../auth/password');
-    const passwordHash = await hashPassword(password);
 
     await this.pool.query(
       `INSERT INTO users (tenant_id, username, password_hash, role, status)
@@ -1811,19 +1952,23 @@ export class PgDatabase {
   async completeAgentTask(
     taskId: string,
     tenantId: string,
-    workstationId: string
+    workstationId: string,
+    counts?: { doneCount?: number; failCount?: number; finalStatus?: 'done' | 'failed' }
   ): Promise<boolean> {
+    const finalStatus = counts?.finalStatus || 'done';
     const result = await this.pool.query(
       `UPDATE tasks
-       SET status = 'done',
+       SET status = $4,
            progress = 100,
+           done_count = COALESCE($5, done_count),
+           fail_count = COALESCE($6, fail_count),
            finished_at = NOW(),
            updated_at = NOW()
        WHERE id = $1
          AND tenant_id = $2
          AND workstation_id = $3
          AND status IN ('assigned', 'running')`,
-      [taskId, tenantId, workstationId]
+      [taskId, tenantId, workstationId, finalStatus, counts?.doneCount, counts?.failCount]
     );
     return (result.rowCount ?? 0) > 0;
   }

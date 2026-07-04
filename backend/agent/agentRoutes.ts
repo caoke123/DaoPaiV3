@@ -15,8 +15,8 @@ import { Router, type Request, type Response } from 'express';
 import { requireAgent } from '../auth/agentAuth';
 import { PgDatabase } from '../db/PgDatabase';
 import { taskLogService } from '../services/TaskLogService';
-import { AssignmentEngine, ArrivalHandler, DispatchHandler, IntegratedHandler, SignHandler, type Assignment } from '../modules/assignment-engine';
-import type { Site } from '../db/Database';
+import { TaskEngineRunner } from '../services/TaskEngineRunner';
+import { PlaywrightRuntime } from '../playwright-runtime/PlaywrightRuntime';
 
 export const agentRouter = Router();
 
@@ -30,36 +30,6 @@ function getAgentPrincipal(req: Request) {
     throw { status: 401, code: 'AGENT_TOKEN_INVALID', message: '鉴权失败' };
   }
   return { tenantId: p.tenantId, workstationId: p.workstationId, siteId: p.siteId };
-}
-
-function getEngineHandler(taskType: string) {
-  switch (taskType) {
-    case 'arrival':
-    case 'arrive':
-      return { taskType: 'arrival' as const, handler: new ArrivalHandler() };
-    case 'dispatch':
-      return { taskType: 'dispatch' as const, handler: new DispatchHandler() };
-    case 'integrated':
-      return { taskType: 'integrated' as const, handler: new IntegratedHandler() };
-    case 'sign':
-      return { taskType: 'sign' as const, handler: new SignHandler() };
-    default:
-      return null;
-  }
-}
-
-function normalizeTaskAssignments(inputData: unknown): { assignments: Assignment[]; waybillNos?: string[] } {
-  const payload = (inputData && typeof inputData === 'object') ? inputData as Record<string, any> : {};
-  const rawAssignments = Array.isArray(payload.assignments) ? payload.assignments : [];
-  const assignments = rawAssignments
-    .filter(a => a && typeof a.staffName === 'string')
-    .map(a => ({
-      ...a,
-      staffName: String(a.staffName),
-      waybillNos: Array.isArray(a.waybillNos) ? a.waybillNos.map(String) : [],
-    }));
-  const waybillNos = Array.isArray(payload.waybillNos) ? payload.waybillNos.map(String) : undefined;
-  return { assignments, waybillNos };
 }
 
 /** GET /agent/me — 验证授权码，返回执行电脑信息 */
@@ -187,16 +157,12 @@ agentRouter.post('/tasks/pull', async (req: Request, res: Response) => {
 
 /** POST /agent/tasks/:id/run-engine — 使用业务页员工窗口执行已拉取任务 */
 agentRouter.post('/tasks/:id/run-engine', async (req: Request, res: Response) => {
-  const tEntry = Date.now();
   try {
+    console.warn('[兼容路径] /agent/tasks/:id/run-engine 仍保留给未迁移任务类型使用。正式方向是 Agent 本地执行；Arrival 已从 Phase K-2A 开始迁移，Dispatch 已从 Phase K-2B 开始迁移，Sign/Integrated 已从 Phase K-2D 开始迁移。');
     const { tenantId, workstationId } = getAgentPrincipal(req);
     const taskId = req.params.id;
-    console.log(`[run-engine] T5 收到请求: taskId=${taskId} t=${tEntry}`);
-
     const pg = PgDatabase.getInstance();
     const task = await pg.getTaskById(tenantId, taskId);
-    console.log(`[run-engine] getTaskById 耗时 ${Date.now() - tEntry}ms taskId=${taskId}`);
-
     if (!task) {
       return res.status(404).json({
         ok: false,
@@ -205,73 +171,48 @@ agentRouter.post('/tasks/:id/run-engine', async (req: Request, res: Response) =>
         timestamp: new Date().toISOString(),
       });
     }
-
-    const selected = getEngineHandler(task.type);
-    if (!selected) {
-      return res.status(400).json({
+    if (task.type === 'arrival' || task.type === 'arrive') {
+      return res.status(409).json({
         ok: false,
-        code: 'TASK_TYPE_UNSUPPORTED',
-        message: `不支持的业务任务类型：${task.type}`,
+        code: 'TASK_TYPE_MIGRATED_TO_AGENT',
+        message: 'Arrival 已迁移到 Agent 本地执行，禁止通过 run-engine 兼容路径执行',
         timestamp: new Date().toISOString(),
       });
     }
-
-    const { assignments, waybillNos } = normalizeTaskAssignments(task.inputData);
-    const assignmentPreview = assignments.map(a => ({
-      staffName: a.staffName,
-      siteId: (a as any).siteId,
-      windowId: a.windowId,
-      browserId: (a as any).browserId,
-      runtimeKey: (a as any).runtimeKey,
-      waybillCount: a.waybillNos.length,
-    }));
-
-    console.log('[AgentRoute][run-engine payload]', {
+    if (task.type === 'dispatch') {
+      return res.status(409).json({
+        ok: false,
+        code: 'TASK_TYPE_MIGRATED_TO_AGENT',
+        message: 'Dispatch 已迁移到 Agent 本地执行，禁止通过 run-engine 兼容路径执行',
+        timestamp: new Date().toISOString(),
+      });
+    }
+    if (task.type === 'sign') {
+      return res.status(409).json({
+        ok: false,
+        code: 'TASK_TYPE_MIGRATED_TO_AGENT',
+        message: 'Sign 已迁移到 Agent 本地执行，禁止通过 run-engine 兼容路径执行',
+        timestamp: new Date().toISOString(),
+      });
+    }
+    if (task.type === 'integrated') {
+      return res.status(409).json({
+        ok: false,
+        code: 'TASK_TYPE_MIGRATED_TO_AGENT',
+        message: 'Integrated 已迁移到 Agent 本地执行，禁止通过 run-engine 兼容路径执行',
+        timestamp: new Date().toISOString(),
+      });
+    }
+    const result = await TaskEngineRunner.runTask({
       taskId,
-      type: task.type,
-      site: task.site,
-      status: task.status,
-      assignmentCount: assignments.length,
-      assignmentsPreview: assignmentPreview,
-      hasWaybillFallback: !!waybillNos?.length,
-    });
-
-    await taskLogService.appendLogs(taskId, [
-      {
-        level: 'info',
-        message: `Agent 已接管业务页任务，准备按员工窗口执行：员工数=${assignments.length || '(自动)'}，类型=${selected.taskType}`,
-      },
-      ...assignments.map(a => ({
-        level: 'info' as const,
-        staffName: a.staffName,
-        windowId: a.windowId,
-        message: `准备执行员工：${a.staffName}，单号数：${a.waybillNos.length}` +
-          ((a as any).runtimeKey ? `，runtimeKey=${(a as any).runtimeKey}` : ''),
-      })),
-    ], {
       tenantId,
       workstationId,
       source: 'agent-engine',
     });
 
-    console.time(`Engine-execute-${taskId}`);
-    console.log(`[run-engine] T6 Engine.execute 开始: taskId=${taskId} 距入口 ${Date.now() - tEntry}ms`);
-
-    await AssignmentEngine.getInstance().execute({
-      taskId,
-      site: task.site as Site,
-      taskType: selected.taskType,
-      assignments,
-      waybillNos,
-      handler: selected.handler,
-    });
-
-    console.timeEnd(`Engine-execute-${taskId}`);
-    console.log(`[run-engine] Engine.execute 完成: taskId=${taskId} 总耗时 ${Date.now() - tEntry}ms`);
-
     res.json({
       ok: true,
-      data: { accepted: true, taskId },
+      data: { accepted: result.accepted, skipped: result.skipped === true, reason: result.reason, taskId },
       timestamp: new Date().toISOString(),
     });
   } catch (e: any) {
@@ -413,8 +354,40 @@ agentRouter.post('/tasks/:id/complete', async (req: Request, res: Response) => {
       }
     }
 
-    // 日志写入完成后再更新任务状态
-    const updated = await pg.completeAgentTask(taskId, tenantId, workstationId);
+    const normalizedResults = results && Array.isArray(results)
+      ? results.map((r: any) => ({
+        waybillNo: String(r.waybillNo || ''),
+        staffName: r.staffName ? String(r.staffName) : undefined,
+        success: r.status !== 'failed' && r.success !== false,
+        message: String(r.message || ''),
+        timestamp: r.timestamp ? Number(new Date(r.timestamp).getTime()) : Date.now(),
+        status: r.status === 'failed' ? 'FAILED' as const : 'DRY_RUN_SKIPPED' as const,
+      })).filter((r: any) => r.waybillNo)
+      : [];
+    const doneCount = normalizedResults.filter((r: any) => r.status !== 'FAILED').length;
+    const failCount = normalizedResults.filter((r: any) => r.status === 'FAILED').length;
+    const finalStatus = normalizedResults.length > 0 && doneCount === 0 && failCount > 0 ? 'failed' as const : 'done' as const;
+
+    if (normalizedResults.length > 0) {
+      try {
+        await pg.insertWaybillResults(
+          taskId,
+          1,
+          normalizedResults,
+          tenantId,
+        );
+      } catch (resultErr) {
+        console.error('[POST /agent/tasks/:id/complete] 写入运单结果失败:', (resultErr as Error).message);
+      }
+    }
+
+    // 日志和结果写入完成后再更新任务状态
+    const updated = await pg.completeAgentTask(
+      taskId,
+      tenantId,
+      workstationId,
+      normalizedResults.length > 0 ? { doneCount, failCount, finalStatus } : undefined,
+    );
 
     if (!updated) {
       return res.status(409).json({
@@ -494,6 +467,86 @@ agentRouter.post('/tasks/:id/fail', async (req: Request, res: Response) => {
   } catch (e: any) {
     if (e.status) return res.status(e.status).json({ ok: false, code: e.code, message: e.message, timestamp: new Date().toISOString() });
     console.error('[POST /agent/tasks/:id/fail] 失败:', e.message);
+    res.status(500).json({ ok: false, code: 'UNKNOWN_ERROR', message: '服务器内部错误', timestamp: new Date().toISOString() });
+  }
+});
+
+// ── Phase K-3A: Agent CDP 接管 READY 窗口查询接口 ──
+
+/**
+ * GET /agent/window-connections — 查询当前 tenant 下所有 Playwright 窗口的连接信息
+ *
+ * 用途：Agent pull 到 arrival task 后，先调此接口查找匹配 staffName 的 READY 窗口，
+ *       若窗口 cdpAttachable=true 且 status=ready，则使用 chromium.connectOverCDP(cdpEndpoint)
+ *       接管已有 Chrome，避免新开窗口 + 重登。
+ *
+ * 查询参数（均可选）：
+ *   - staffName: 按员工姓名精确过滤
+ *   - status: 按窗口状态过滤（如 'ready' / 'busy' / 'login_required'）
+ *   - siteId: 按站点过滤
+ *
+ * 返回结构：
+ *   {
+ *     ok: true,
+ *     data: {
+ *       windows: Array<{
+ *         runtimeKey, windowId, staffName, windowName,
+ *         tenantId, siteId, status, currentUrl, isLoggedIn,
+ *         cdpPort, cdpEndpoint, cdpAttachable
+ *       }>,
+ *       total: number
+ *     }
+ *   }
+ *
+ * 安全约束：
+ *   - 只返回当前 Agent tenantId 下的窗口（避免跨租户泄露）
+ *   - cdpEndpoint 仅 127.0.0.1，不暴露公网
+ *   - cdpAttachable=false 的窗口 Agent 应跳过（旧窗口或开关未启用）
+ */
+agentRouter.get('/window-connections', async (req: Request, res: Response) => {
+  try {
+    const { tenantId } = getAgentPrincipal(req);
+    const { staffName, status, siteId } = req.query as { staffName?: string; status?: string; siteId?: string };
+
+    const runtime = PlaywrightRuntime.getInstance();
+    const allWindows = runtime.listWindowsJSON();
+
+    // 按 tenantId 过滤（隔离），并按可选查询参数过滤
+    const filtered = allWindows.filter(w => {
+      if (w.tenantId !== tenantId) return false;
+      if (staffName && w.staffName !== staffName) return false;
+      if (status && w.status !== status) return false;
+      if (siteId && w.siteId !== siteId) return false;
+      return true;
+    });
+
+    const windows = filtered.map(w => ({
+      runtimeKey: w.runtimeKey,
+      windowId: w.windowId,
+      staffName: w.staffName ?? null,
+      windowName: w.windowName ?? null,
+      tenantId: w.tenantId,
+      siteId: w.siteId,
+      status: w.status,
+      currentUrl: w.currentUrl ?? null,
+      isLoggedIn: w.isLoggedIn ?? null,
+      // Phase K-3A: CDP 接管字段
+      cdpPort: w.cdpPort ?? null,
+      cdpEndpoint: w.cdpEndpoint ?? null,
+      cdpAttachable: w.cdpAttachable ?? false,
+    }));
+
+    res.json({
+      ok: true,
+      data: {
+        windows,
+        total: windows.length,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (e: any) {
+    if (e.status) return res.status(e.status).json({ ok: false, code: e.code, message: e.message, timestamp: new Date().toISOString() });
+    console.error('[GET /agent/window-connections] 失败:', e.message);
     res.status(500).json({ ok: false, code: 'UNKNOWN_ERROR', message: '服务器内部错误', timestamp: new Date().toISOString() });
   }
 });

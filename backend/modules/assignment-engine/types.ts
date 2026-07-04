@@ -91,12 +91,13 @@ export interface WorkerConnectionHandle {
  *
  * Phase E-1: 新增 'sign' 任务类型
  * Phase 9-dryrun: 新增 dryRunMode 全局试运行模式
+ * Phase 5-I-1: dryRunMode 改为任务级优先（inputData.browserDryRun），全局 SettingsManager 仅兜底
  */
 export interface TaskContext {
   taskId: string;
   site: Site;
   taskType: 'arrival' | 'dispatch' | 'sign' | 'integrated' | 'init_window';
-  /** 全局试运行模式：true=跳过最终提交按钮，false=真实执行；由 Engine 从 SettingsManager 注入 */
+  /** 试运行模式：true=跳过最终提交按钮，false=真实执行；由 Engine 通过 resolveTaskDryRun 解析（任务级优先，全局兜底） */
   dryRunMode: boolean;
 }
 

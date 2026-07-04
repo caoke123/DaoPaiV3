@@ -80,6 +80,7 @@ function renderLogLines(logs: TaskLogEntry[], isIdle: boolean, isRunning: boolea
 
 export default function SignPage() {
   const execPanelRef = useRef<HTMLDivElement>(null);
+  const lastActiveSiteRef = useRef<string | null>(null);
 
   const { activeSiteId, sites, siteWindows: ctxWindows, siteName, fetchError: ctxFetchError, isPlaywright } = useWindowState();
 
@@ -113,6 +114,7 @@ export default function SignPage() {
     workerProgress, rate, eta,
     selectedWorkers: ctxSelectedWorkers, allocations: ctxAllocations, taskOrigin,
     startTask: ctxStartTask, resetTask: ctxResetTask, setSubmitting: ctxSetSubmitting,
+    restoreTask: ctxRestoreTask,
   } = useTaskExecution();
 
   // ── Phase 5-G-2: 使用统一日志 Hook ──
@@ -225,6 +227,13 @@ export default function SignPage() {
   // ★ P0 安全加固：站点切换时清空任务选择状态，防止跨站点员工混入
   // 切换 activeSiteId 时，旧站点已选员工 / 分页配置 / 任务执行状态必须全部清空
   useEffect(() => {
+    if (lastActiveSiteRef.current === null) {
+      lastActiveSiteRef.current = activeSiteId;
+      return;
+    }
+    if (lastActiveSiteRef.current === activeSiteId) return;
+    lastActiveSiteRef.current = activeSiteId;
+
     setSelectedWorkers([]);
     setWorkerPageSizes({});
     setLocalFetchError('');
@@ -240,7 +249,12 @@ export default function SignPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSiteId]);
 
-  // Phase 5-G-7: 页面挂载时从 context 恢复活跃任务状态
+  // Phase 5-G-7-2: 页面挂载时从 localStorage + 后端 PG 恢复任务完整状态
+  useEffect(() => {
+    ctxRestoreTask(SUBMIT_API);
+  }, [ctxRestoreTask]);
+
+  // 后端恢复完成后，同步配置区的本地选择态，避免返回页面时“已选 0”。
   useEffect(() => {
     if (taskActive && ctxSelectedWorkers.length > 0 && selectedWorkers.length === 0) {
       setSelectedWorkers([...ctxSelectedWorkers]);
@@ -327,11 +341,13 @@ export default function SignPage() {
       setShowRealModeConfirm(true);
       return;
     }
+    console.log(`[TaskStartTiming] T0 点击启动 ${SUBMIT_API}`);
     doStartTask();
   }, [selectedWorkers, activeSiteId, dryRunMode, doStartTask]);
 
   const confirmRealStart = useCallback(() => {
     setShowRealModeConfirm(false);
+    console.log(`[TaskStartTiming] T0 点击启动 ${SUBMIT_API}`);
     doStartTask();
   }, [doStartTask]);
 

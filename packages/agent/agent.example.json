@@ -1,8 +1,11 @@
 {
+  "cloudApiUrl": "http://localhost:3300",
   "cloudBaseUrl": "http://localhost:3300",
-  "agentToken": "请填入执行电脑授权码",
+  "tenantId": "tenant_xxx",
+  "siteId": "site_xxx",
+  "workstationId": "ws_xxx",
+  "agentToken": "agent_token_xxx",
   "workstationName": "天南大-前台电脑01",
-  "siteId": null,
   "settingsPath": "../../data/settings.json",
   "browser": {
     "executablePath": "E:/网站开发/DaoPaiV3/Chrome/App/chrome.exe",
@@ -14,6 +17,7 @@
     "loginUrl": "https://bnsy.benniaosuyun.com/login"
   },
   "logLevel": "info",
+  "pollIntervalMs": 3000,
   "heartbeatIntervalMs": 15000,
-  "taskPollIntervalMs": 5000
+  "taskPollIntervalMs": 3000
 }

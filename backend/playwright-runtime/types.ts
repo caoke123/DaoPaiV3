@@ -130,6 +130,26 @@ export interface PlaywrightWindowState {
   activePageUrl?: string;
   /** 最后一次 P0 检查时间戳 */
   p0CheckedAt?: number;
+  // ── Phase K-3A: CDP endpoint 暴露（用于 Agent 接管 READY 窗口） ──
+  /**
+   * Chrome 远程调试端口（仅 127.0.0.1 监听）。
+   * 启动时由 allocateCdpPort 按 runtimeKey 哈希到 9300-9399 范围分配。
+   * 仅当 ENABLE_WINDOW_CDP_ENDPOINT=true 时分配；否则为 undefined。
+   */
+  cdpPort?: number;
+  /**
+   * CDP endpoint URL，格式 `http://127.0.0.1:${cdpPort}`。
+   * Agent 使用 chromium.connectOverCDP(cdpEndpoint) 接管 READY 窗口。
+   * 仅本机访问，不暴露公网。
+   */
+  cdpEndpoint?: string;
+  /**
+   * 是否可被 Agent CDP 接管。
+   * - true: 启用了 ENABLE_WINDOW_CDP_ENDPOINT 且成功分配端口
+   * - false: 开关关闭、端口分配失败、或旧窗口启动时未带 CDP 端口
+   * Agent 应跳过 cdpAttachable=false 的窗口，避免误新开 Chrome。
+   */
+  cdpAttachable?: boolean;
   // ⚠️ context 和 page 不序列化，仅运行时持有
   context?: BrowserContext;
   page?: Page;

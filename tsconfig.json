@@ -12,5 +12,11 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": ["backend/**/*"],
-  "exclude": ["node_modules", "frontend", "dist", "scripts"]
+  "exclude": [
+    "node_modules",
+    "frontend",
+    "dist",
+    "scripts",
+    "backend/archive"
+  ]
 }

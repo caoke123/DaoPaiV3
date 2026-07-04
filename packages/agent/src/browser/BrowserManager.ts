@@ -18,7 +18,7 @@ import * as fs from 'fs';
 import * as http from 'http';
 import { spawn, type ChildProcess } from 'child_process';
 import type { BrowserConfig } from '../types';
-import type { Browser, Page } from 'playwright-core';
+import type { Browser, BrowserContext, Page } from 'playwright-core';
 import { sanitizeChromeProfile } from './ChromeProfileSanitizer';
 import { saveSession, readSession, clearSession, markCloseFailed } from './BrowserProcessRegistry';
 import {
@@ -324,6 +324,85 @@ export class BrowserManager {
     } catch {
       return { connected: false, userAgent: '', pageUrl: '', title: '' };
     }
+  }
+
+  // ══════════════════════════════════════════════════════════
+  // 4. connectExisting() — Phase K-3A-2: 通过 CDP 接管已有 READY 窗口
+  // ══════════════════════════════════════════════════════════
+
+  /**
+   * 通过 CDP 连接已有 Backend READY 窗口
+   *
+   * 不启动新 browser 进程，不调用 launch / start。
+   * 复用已有 context / page，优先选择非 about:blank 的业务页。
+   *
+   * 禁止用于 Phase K Agent business execution 之外的场景。
+   */
+  static async connectExisting(cdpEndpoint: string): Promise<{
+    browser: Browser;
+    context: BrowserContext;
+    page: Page;
+  }> {
+    const maskedEndpoint = cdpEndpoint.replace(/:\/\/.*?:/, '://***:');
+    console.log(`[Agent][Browser] connectExisting start cdpEndpoint=${maskedEndpoint}`);
+
+    const { chromium } = await import('playwright-core');
+    let browser: Browser;
+
+    try {
+      browser = await chromium.connectOverCDP(cdpEndpoint);
+    } catch (err) {
+      const msg = (err as Error).message;
+      console.error(`[Agent][Browser] connectExisting failed reason=${msg}`);
+      throw new Error(`CDP_CONNECT_FAILED: ${msg}`);
+    }
+
+    const contexts = browser.contexts();
+    const context = contexts.length > 0 ? contexts[0] : await browser.newContext();
+
+    const allPages = context.pages();
+    console.log(`[Agent][Browser] connectExisting success pages=${allPages.length}`);
+
+    // 优先选择非 about:blank 的业务页
+    let targetPage: Page | null = null;
+
+    if (allPages.length > 0) {
+      // 优先选择笨鸟业务域名页面
+      for (const p of allPages) {
+        try {
+          const url = p.url();
+          if (url && !url.startsWith('about:') && url.includes('benniaosuyun.com')) {
+            targetPage = p;
+            break;
+          }
+        } catch {
+          // 忽略不可达页面
+        }
+      }
+      // 回退到第一个非 about:blank 页面
+      if (!targetPage) {
+        for (const p of allPages) {
+          try {
+            const url = p.url();
+            if (url && !url.startsWith('about:')) {
+              targetPage = p;
+              break;
+            }
+          } catch {
+            // 忽略
+          }
+        }
+      }
+      // 最后使用第一个页面
+      if (!targetPage) {
+        targetPage = allPages[0];
+      }
+    } else {
+      // 没有页面则创建（仍在同一个 CDP browser 内）
+      targetPage = await context.newPage();
+    }
+
+    return { browser, context, page: targetPage };
   }
 
   // ══════════════════════════════════════════════════════════

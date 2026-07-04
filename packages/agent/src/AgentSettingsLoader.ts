@@ -41,6 +41,10 @@ export interface LoginCredential {
   loginPassword: string;
 }
 
+function normalizeName(value?: string): string {
+  return (value || '').trim().toLowerCase();
+}
+
 /**
  * 解析 settingsPath
  */
@@ -96,11 +100,34 @@ export class AgentSettingsLoader {
     }
   }
 
+  /**
+   * 将网点名称映射为后端 normalizeSiteToCode 产生的 siteCode。
+   * 与 backend/api/routes.ts:normalizeSiteToCode 保持一致。
+   */
+  private siteNameToCode(name: string): string {
+    if (name.includes('天南大')) return 'tiannanda';
+    if (name.includes('和苑')) return 'heyuan';
+    return '';
+  }
+
+  /**
+   * 多形态匹配网点：按 id / name / 派生 code 匹配。
+   * 后端 normalizeSiteToCode 会把 site.id（如 site-1782121346155）转成 code（如 tiannanda），
+   * 任务里存的是 code，因此 Agent 侧必须按 code 兜底匹配。
+   */
+  private matchSite(sites: NonNullable<SettingsData['sites']>, siteId: string) {
+    return sites.find(s =>
+      s.id === siteId ||
+      s.name === siteId ||
+      this.siteNameToCode(s.name) === siteId
+    );
+  }
+
   /** 根据 siteId 查找网点配置，校验是否存在 */
   async getSiteById(siteId: string): Promise<{ id: string; name: string } | null> {
     const data = await this.loadSettings();
     if (!data?.sites) return null;
-    const site = data.sites.find(s => s.id === siteId);
+    const site = this.matchSite(data.sites, siteId);
     return site ? { id: site.id, name: site.name } : null;
   }
 
@@ -134,7 +161,7 @@ export class AgentSettingsLoader {
       return null;
     }
 
-    const site = data.sites.find(s => s.id === siteId);
+    const site = this.matchSite(data.sites, siteId);
     if (!site) {
       console.error(`[AgentSettingsLoader] 错误：未找到网点 ${siteId}，请检查 settings.json`);
       return null;
@@ -171,6 +198,70 @@ export class AgentSettingsLoader {
       siteName: site.name,
       employeeName: win.employeeName || win.username || '未知员工',
       loginAccount: win.username!,
+      loginPassword: decodedPassword,
+    };
+  }
+
+  /**
+   * 获取指定员工的本地登录凭据。
+   *
+   * Dispatch 迁回 Agent 后，执行窗口员工和目标派件员可能不是同一个人；
+   * 登录必须按执行窗口员工匹配，不能再使用网点第一个凭据。
+   */
+  async getLoginCredentialForStaff(siteId: string, staffName: string): Promise<LoginCredential | null> {
+    const data = await this.loadSettings();
+    if (!data?.sites) {
+      console.error('[AgentSettingsLoader] 错误：settings.json 中未找到网点配置');
+      return null;
+    }
+
+    const site = this.matchSite(data.sites, siteId);
+    if (!site) {
+      console.error(`[AgentSettingsLoader] 错误：未找到网点 ${siteId}，请检查 settings.json`);
+      return null;
+    }
+
+    if (!site.windows || site.windows.length === 0) {
+      console.error(`[AgentSettingsLoader] 错误：网点 ${site.name} 下没有配置窗口，请检查 settings.json`);
+      return null;
+    }
+
+    const target = normalizeName(staffName);
+    const win = site.windows.find(w => {
+      const employeeName = normalizeName(w.employeeName);
+      const username = normalizeName(w.username);
+      const windowName = normalizeName(w.windowName);
+      return employeeName === target || username === target || windowName.includes(target);
+    });
+
+    if (!win) {
+      console.error(`[AgentSettingsLoader] 错误：网点 ${site.name} 下未找到员工 ${staffName} 的窗口凭据`);
+      return null;
+    }
+
+    if (!win.username || !win.password) {
+      console.error(`[AgentSettingsLoader] 错误：员工 ${win.employeeName || staffName} 未配置账号或密码`);
+      return null;
+    }
+
+    let decodedPassword = '';
+    try {
+      decodedPassword = Buffer.from(win.password, 'base64').toString('utf-8');
+    } catch {
+      console.error(`[AgentSettingsLoader] 错误：员工 ${win.employeeName || win.username} 密码解码失败`);
+      return null;
+    }
+
+    if (!decodedPassword) {
+      console.error(`[AgentSettingsLoader] 错误：员工 ${win.employeeName || win.username} 密码为空`);
+      return null;
+    }
+
+    return {
+      siteId: site.id,
+      siteName: site.name,
+      employeeName: win.employeeName || staffName,
+      loginAccount: win.username,
       loginPassword: decodedPassword,
     };
   }

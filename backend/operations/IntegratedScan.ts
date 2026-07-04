@@ -3,10 +3,8 @@
 // 流程：导航到到件扫描页面 → 选上一站 → 勾选到派一体 → 选派件员 → 逐个添加 → 200条/页 → 全选 → 上传 → 四态判定
 //
 // Phase 9-dryrun: 最终提交按钮受全局 dryRunMode 控制（由 Engine 通过参数传入）
-import type { Page } from 'playwright';
+import type { Locator, Page } from 'playwright';
 import { waitForToast, takeScreenshot, captureFailureScreenshot } from '../browser/PageNavigator';
-import { PageStateManager } from '../browser/PageStateManager';
-import { NavigationGovernance } from '../browser/NavigationGovernance';
 import type { OperationResult } from './BaseOperation';
 import type { LogContext } from '../utils/TaskLogManager';
 import {
@@ -17,6 +15,8 @@ import {
 import { parseArriveScanResult } from './arriveScanResult';
 import { SettingsManager } from '../config/SettingsManager';
 import type { Site } from '../db/Database';
+import { BusinessPageNavigator } from '../browser/BusinessPageNavigator';
+import { verifyBusinessPageReady } from './businessPageReady';
 
 // 系统限制：每次最多处理 200 条
 const MAX_BATCH_SIZE = 200;
@@ -25,15 +25,46 @@ const MAX_BATCH_SIZE = 200;
 const TIMEOUT_ELEMENT = 10000;      // 页面元素
 const TIMEOUT_BUTTON = 3000;        // 按钮点击
 const TIMEOUT_TOAST = 10000;        // toast 等待
-const TIMEOUT_RELOAD = 15000;       // 页面重新加载
 
 // 间隔配置
 const BATCH_INTERVAL = 2000;        // 批次间间隔
 const ADD_INTERVAL = 300;           // 添加单条间隔
 const NAV_SETTLE = 1500;            // 导航后稳定等待
+const SLOW_STEP_MS = 1500;           // 超过该耗时的子步骤输出 warning，便于定位单窗口慢点
+
+const DIAGNOSTIC_SCREENSHOTS_ENABLED =
+  process.env.INTEGRATED_DIAGNOSTIC_SCREENSHOTS === '1' ||
+  process.env.INTEGRATED_DIAGNOSTIC_SCREENSHOTS === 'true';
 
 /** 日志函数类型 */
 type LogFn = (level: 'info' | 'warning' | 'error', msg: string, context?: LogContext) => void;
+
+async function timedStep<T>(
+  log: LogFn,
+  batchLabel: string,
+  label: string,
+  fn: () => Promise<T>,
+  warnAfterMs = SLOW_STEP_MS,
+): Promise<T> {
+  const start = Date.now();
+  try {
+    return await fn();
+  } finally {
+    const elapsed = Date.now() - start;
+    const level = elapsed >= warnAfterMs ? 'warning' : 'info';
+    log(level, `[${batchLabel}] PERF ${label} ${elapsed}ms`);
+  }
+}
+
+async function takeDiagnosticScreenshot(page: Page, label: string): Promise<void> {
+  if (!DIAGNOSTIC_SCREENSHOTS_ENABLED) return;
+  await takeScreenshot(page, label);
+}
+
+async function fastStableBypassClick(locator: Locator, timeout = TIMEOUT_BUTTON): Promise<void> {
+  await locator.waitFor({ state: 'visible', timeout });
+  await locator.click({ timeout, force: true });
+}
 
 /** 到派一体任务分配（每个员工一组运单） */
 export interface IntegratedAssignment {
@@ -111,10 +142,9 @@ export async function executeOneStaff(
       const batchResults = await processOneBatch(page, staffName, effectiveCourierName, employeeId, batch, batchIdx, batches.length, log, dryRunMode);
       staffResults.push(...batchResults);
     } catch (err) {
-      // Phase G-2: 失败自动截图
+      // Phase G-2: 失败自动截图（默认ENABLE_RUNTIME_SCREENSHOTS=0关闭）
       if (taskId) {
-        const ssPath = await captureFailureScreenshot(page, taskId, `integrated_${staffName}_batch${batchIdx + 1}`);
-        if (ssPath) log('error', `异常截图已保存 路径: ${ssPath}`);
+        await captureFailureScreenshot(page, taskId, `integrated_${staffName}_batch${batchIdx + 1}`).catch(() => '');
       }
 
       // FatalIntegratedError 或其他批次错误：本批标记失败，继续下一批
@@ -145,7 +175,7 @@ export async function executeOneStaff(
  *
  * 每批都重新走完整流程，不复用上一批页面状态：
  * a. 导航到到件扫描页面 + 强制 reload 清空表格
- * b. PageStateManager 前置检查
+ * b. 菜单优先导航 + 轻量页面验证
  * c. 选上一站（天津分拨中心）—— 到派一体专属
  * d. 勾选"到派一体"选项框 —— 到派一体专属
  * e. 选择派件员（失败 throw FatalIntegratedError）
@@ -166,49 +196,51 @@ async function processOneBatch(
   dryRunMode?: boolean,
 ): Promise<OperationResult[]> {
   const batchLabel = `员工:${staffName} 批次 ${batchIdx + 1}/${totalBatches}`;
+  const batchStart = Date.now();
 
   // a. 每批重新导航到到件扫描页面
+  // Phase 5-G-8-4: 统一使用 BusinessPageNavigator（ensureCleanHome + URL优先 + 重试 + 侧边栏兜底）
   log('info', `[${batchLabel}] 导航到到件扫描页面(到派一体)`);
-  const navGov = NavigationGovernance.getInstance();
-  const navResult = await navGov.navigateTo(page, 'integrated');
+  const businessNav = BusinessPageNavigator.getInstance();
+  const navResult = await timedStep(log, batchLabel, 'navigateToBusinessPage(integrated)', () =>
+    businessNav.navigateToBusinessPage(page, 'integrated', {
+      staffName,
+      log: (level, msg) => log(level, `[${batchLabel}] ${msg}`),
+    }),
+  );
   if (!navResult.success) {
     throw new Error(`[${batchLabel}] 导航失败: ${navResult.error ?? '未知错误'}`);
   }
+  log('info', `[${batchLabel}] 导航结果: method=${navResult.method}, duration=${navResult.durationMs}ms`);
 
-  // 强制重新加载，清空上一批表格状态（确保每批干净开始）
-  await page.reload({ timeout: TIMEOUT_RELOAD });
-  await page.waitForTimeout(NAV_SETTLE);
-
-  // b. PageStateManager 前置检查
-  log('info', `[${batchLabel}] PageStateManager.ensureReadyForTask('integrated')`);
-  const stateMgr = PageStateManager.getInstance();
-  const state = await stateMgr.ensureReadyForTask(page, 'integrated', {
-    autoFix: true,
-    maxAutoFixRetries: 1,
-  });
-
-  if (!state.ready) {
-    throw new Error(`[${batchLabel}] 页面状态检查未通过: ${state.blockedBy.join(', ')}`);
+  const ready = await timedStep(log, batchLabel, 'verifyBusinessPageReady(integrated)', () =>
+    verifyBusinessPageReady(page, 'integrated', batchLabel, log),
+  );
+  if (!ready.ready) {
+    throw new Error(`[${batchLabel}] 页面轻量验证未通过: missing=${ready.missing.join(',') || '-'}, popupVisible=${ready.popupVisible}`);
   }
 
-  log('info', `[${batchLabel}] Page Ready (URL=${state.url.actual})`);
-  await takeScreenshot(page, `${batchLabel}_page_ready`);
+  log('info', `[${batchLabel}] Page Ready (URL=${ready.url})`);
+  await takeDiagnosticScreenshot(page, `${batchLabel}_page_ready`);
 
   // c. 选上一站（天津分拨中心）—— 到派一体专属
-  await selectPrevStation(page, batchLabel, log);
+  await timedStep(log, batchLabel, 'selectPrevStation', () => selectPrevStation(page, batchLabel, log));
 
   // d. 勾选"到派一体"选项框 —— 到派一体专属
-  await checkIntegratedCheckbox(page, batchLabel, log);
+  await timedStep(log, batchLabel, 'checkIntegratedCheckbox', () => checkIntegratedCheckbox(page, batchLabel, log));
 
   // e. 选择派件员（失败 throw FatalIntegratedError）
-  await selectCourier(page, courierVerifyName, employeeId, batchLabel, log);
+  await timedStep(log, batchLabel, 'selectCourier', () => selectCourier(page, courierVerifyName, employeeId, batchLabel, log));
 
   // f. 逐个添加运单，检测添加成功/失败
-  const { addedWaybills, addFailures } = await addWaybillsOneByOne(page, batch, staffName, batchLabel, log);
+  const { addedWaybills, addFailures } = await timedStep(log, batchLabel, 'addWaybillsOneByOne', () =>
+    addWaybillsOneByOne(page, batch, staffName, batchLabel, log),
+  );
 
   // g. 无成功添加则跳过上传
   if (addedWaybills.length === 0) {
     log('warning', `[${batchLabel}] 无运单添加成功，跳过上传`);
+    log('info', `[${batchLabel}] PERF batch total ${Date.now() - batchStart}ms`);
     return addFailures;
   }
 
@@ -219,6 +251,7 @@ async function processOneBatch(
   const uploadResults = await uploadAndJudge(page, addedWaybills, staffName, batchLabel, log, dryRunMode);
 
   // i. 合并添加失败 + 上传结果
+  log('info', `[${batchLabel}] PERF batch total ${Date.now() - batchStart}ms`);
   return [...addFailures, ...uploadResults];
 }
 
@@ -235,32 +268,38 @@ async function selectPrevStation(
 
   try {
     // 诊断：点击前截图
-    await takeScreenshot(page, `${batchLabel}_prevStation_before_click`);
+    await takeDiagnosticScreenshot(page, `${batchLabel}_prevStation_before_click`);
 
     // 点击"上一站"下拉框 input
-    await page.click(INTEGRATED_SCAN_SELECTORS.prevStationInput, { timeout: TIMEOUT_ELEMENT });
-    await page.waitForTimeout(800);
+    await timedStep(log, batchLabel, 'prevStation.clickInput', () =>
+      page.click(INTEGRATED_SCAN_SELECTORS.prevStationInput, { timeout: TIMEOUT_ELEMENT }),
+    );
+    await timedStep(log, batchLabel, 'prevStation.waitDropdown', () => page.waitForTimeout(800), 1200);
 
     // 用 page.evaluate 直接 DOM click 选项（绕过 Playwright 可见性检查）
-    const clicked = await page.evaluate((stationName) => {
-      const items = document.querySelectorAll('li.el-select-dropdown__item');
-      for (const item of items) {
-        if (item.textContent && item.textContent.includes(stationName)) {
-          (item as HTMLElement).click();
-          return true;
+    const clicked = await timedStep(log, batchLabel, 'prevStation.pickOption', () =>
+      page.evaluate((stationName) => {
+        const items = document.querySelectorAll('li.el-select-dropdown__item');
+        for (const item of items) {
+          if (item.textContent && item.textContent.includes(stationName)) {
+            (item as HTMLElement).click();
+            return true;
+          }
         }
-      }
-      return false;
-    }, DEFAULT_PREV_STATION);
+        return false;
+      }, DEFAULT_PREV_STATION),
+    );
 
     if (clicked) {
       log('info', `[${batchLabel}] 上一站已选择: ${DEFAULT_PREV_STATION}`);
     } else {
       // 兜底：直接输入文本
       log('warning', `[${batchLabel}] 未找到上一站选项，尝试直接输入文本`);
-      await page.fill(INTEGRATED_SCAN_SELECTORS.prevStationInput, DEFAULT_PREV_STATION);
-      await page.keyboard.press('Enter');
-      await page.waitForTimeout(500);
+      await timedStep(log, batchLabel, 'prevStation.fillFallback', () =>
+        page.fill(INTEGRATED_SCAN_SELECTORS.prevStationInput, DEFAULT_PREV_STATION),
+      );
+      await timedStep(log, batchLabel, 'prevStation.pressEnterFallback', () => page.keyboard.press('Enter'));
+      await timedStep(log, batchLabel, 'prevStation.waitFallback', () => page.waitForTimeout(500), 900);
 
       // Phase L-2: 验证 fill 后 input 真实值（防止前端防抖截断）
       const stationInput = page.locator(INTEGRATED_SCAN_SELECTORS.prevStationInput);
@@ -270,10 +309,10 @@ async function selectPrevStation(
       }
       log('info', `[${batchLabel}] 上一站已输入: ${actualStation}`);
     }
-    await page.waitForTimeout(500);
+    await timedStep(log, batchLabel, 'prevStation.waitAfterPick', () => page.waitForTimeout(500), 900);
 
     // 诊断：点击后截图
-    await takeScreenshot(page, `${batchLabel}_prevStation_after_click`);
+    await takeDiagnosticScreenshot(page, `${batchLabel}_prevStation_after_click`);
   } catch (e) {
     log('warning', `[${batchLabel}] 选上一站异常: ${(e as Error).message}`);
     await takeScreenshot(page, `${batchLabel}_prevStation_error`);
@@ -309,8 +348,10 @@ async function checkIntegratedCheckbox(
       throw new Error(`[${batchLabel}] 未找到"到派一体"复选框`);
     }
 
-    await checkboxLoc.first().click({ timeout: TIMEOUT_BUTTON });
-    await page.waitForTimeout(800); // 等待派件员下拉框出现
+    await timedStep(log, batchLabel, 'integratedCheckbox.click', () =>
+      checkboxLoc.first().click({ timeout: TIMEOUT_BUTTON }),
+    );
+    await timedStep(log, batchLabel, 'integratedCheckbox.waitCourierField', () => page.waitForTimeout(800), 1200);
     log('info', `[${batchLabel}] "到派一体"已勾选`);
   } catch (e) {
     log('error', `[${batchLabel}] 勾选"到派一体"失败: ${(e as Error).message}`);
@@ -347,7 +388,7 @@ async function selectCourier(
 ): Promise<void> {
   log('info', `[${batchLabel}] 选择派件员: ${staffName} (employeeId=${employeeId})`);
 
-  await takeScreenshot(page, `${batchLabel}_courier_before_click`);
+  await takeDiagnosticScreenshot(page, `${batchLabel}_courier_before_click`);
 
   // Step 1: Playwright 真实 .click() 点击派件员 input 触发弹窗
   log('info', `[${batchLabel}] Step1: 点击派件员 input 触发弹窗`);
@@ -359,7 +400,9 @@ async function selectCourier(
   }
 
   try {
-    await inputLoc.first().click({ timeout: TIMEOUT_ELEMENT });
+    await timedStep(log, batchLabel, 'courier.clickInput', () =>
+      inputLoc.first().click({ timeout: TIMEOUT_ELEMENT }),
+    );
   } catch (e) {
     log('error', `[${batchLabel}] 点击派件员 input 失败: ${(e as Error).message}`);
     throw new FatalIntegratedError(staffName, batchLabel);
@@ -369,7 +412,9 @@ async function selectCourier(
   log('info', `[${batchLabel}] Step2: 等待"选择派件员"弹窗出现`);
   const dialogLoc = page.locator(INTEGRATED_SCAN_SELECTORS.courierDialogWrapper);
   try {
-    await dialogLoc.waitFor({ state: 'visible', timeout: TIMEOUT_ELEMENT });
+    await timedStep(log, batchLabel, 'courier.waitDialogVisible', () =>
+      dialogLoc.waitFor({ state: 'visible', timeout: TIMEOUT_ELEMENT }).then(() => undefined),
+    );
   } catch (e) {
     log('error', `[${batchLabel}] "选择派件员"弹窗未出现: ${(e as Error).message}`);
     await takeScreenshot(page, `${batchLabel}_courier_dialog_missing`);
@@ -377,12 +422,12 @@ async function selectCourier(
   }
   log('info', `[${batchLabel}] "选择派件员"弹窗已出现`);
 
-  await takeScreenshot(page, `${batchLabel}_courier_dialog_open`);
+  await takeDiagnosticScreenshot(page, `${batchLabel}_courier_dialog_open`);
 
   // Step 3: 遍历表格行，按员工编号列（el-table_2_column_16）精确匹配 employeeId
   log('info', `[${batchLabel}] Step3: 遍历表格行按员工编号精确匹配 (employeeId=${employeeId})`);
   const rowLoc = page.locator(INTEGRATED_SCAN_SELECTORS.courierDialogTableRow);
-  const rowCount = await rowLoc.count();
+  const rowCount = await timedStep(log, batchLabel, 'courier.countRows', () => rowLoc.count());
   log('info', `[${batchLabel}] 弹窗表格行数: ${rowCount}`);
 
   if (rowCount === 0) {
@@ -394,16 +439,18 @@ async function selectCourier(
   // 遍历所有行，按员工编号列精确匹配（字符串严格相等，不用 includes 模糊匹配）
   let matchedRowIdx = -1;
   const idDump: string[] = [];
-  for (let i = 0; i < rowCount; i++) {
-    const idCell = rowLoc.nth(i).locator('td.el-table_2_column_16').first();
-    const idText = (await idCell.textContent())?.trim() ?? '';
-    idDump.push(idText);
-    if (idText === employeeId) {
-      matchedRowIdx = i;
-      log('info', `[${batchLabel}] 匹配命中: 第${i + 1}行, 员工编号=${idText}`);
-      break;
+  await timedStep(log, batchLabel, 'courier.scanEmployeeRows', async () => {
+    for (let i = 0; i < rowCount; i++) {
+      const idCell = rowLoc.nth(i).locator('td.el-table_2_column_16').first();
+      const idText = (await idCell.textContent())?.trim() ?? '';
+      idDump.push(idText);
+      if (idText === employeeId) {
+        matchedRowIdx = i;
+        log('info', `[${batchLabel}] 匹配命中: 第${i + 1}行, 员工编号=${idText}`);
+        break;
+      }
     }
-  }
+  });
 
   if (matchedRowIdx === -1) {
     log('error', `[${batchLabel}] 未找到员工编号=${employeeId} 的行。表格中所有员工编号: ${JSON.stringify(idDump)}`);
@@ -418,7 +465,9 @@ async function selectCourier(
   const useButtonLoc = page.locator(INTEGRATED_SCAN_SELECTORS.courierUseButton).nth(matchedRowIdx);
 
   try {
-    await useButtonLoc.click({ timeout: TIMEOUT_BUTTON });
+    await timedStep(log, batchLabel, 'courier.clickUseButton', () =>
+      fastStableBypassClick(useButtonLoc, TIMEOUT_BUTTON),
+    );
   } catch (e) {
     log('error', `[${batchLabel}] 点击"使用"按钮失败: ${(e as Error).message}`);
     await takeScreenshot(page, `${batchLabel}_courier_use_button_error`);
@@ -431,7 +480,9 @@ async function selectCourier(
   // 等待弹窗关闭（Element UI 关闭动画约 300-500ms，给 5s 兜底）
   let dialogClosed = true;
   try {
-    await dialogLoc.waitFor({ state: 'hidden', timeout: 5000 });
+    await timedStep(log, batchLabel, 'courier.waitDialogHidden', () =>
+      dialogLoc.waitFor({ state: 'hidden', timeout: 5000 }).then(() => undefined),
+    );
   } catch {
     dialogClosed = false;
   }
@@ -452,14 +503,16 @@ async function selectCourier(
   }
 
   // 验证派件员 input 回填的姓名与传入 staffName 一致
-  const courierInputValue = await page.locator(INTEGRATED_SCAN_SELECTORS.courierSelectInput).first().inputValue().catch(() => '');
+  const courierInputValue = await timedStep(log, batchLabel, 'courier.verifyInputValue', () =>
+    page.locator(INTEGRATED_SCAN_SELECTORS.courierSelectInput).first().inputValue().catch(() => ''),
+  );
   if (courierInputValue === staffName) {
     log('info', `[${batchLabel}] 派件员 input 回填验证通过: ${courierInputValue}`);
   } else {
     log('warning', `[${batchLabel}] 派件员 input 回填值="${courierInputValue}" 与 staffName="${staffName}" 不一致（弹窗已关闭，继续执行）`);
   }
 
-  await takeScreenshot(page, `${batchLabel}_courier_after_select`);
+  await takeDiagnosticScreenshot(page, `${batchLabel}_courier_after_select`);
   log('info', `[${batchLabel}] 派件员已选择`);
 }
 
@@ -484,6 +537,7 @@ async function addWaybillsOneByOne(
   let batchSuccess = 0;
   let batchFail = 0;
   let lastAggregateIdx = -1;
+  let lastAggregateAt = Date.now();
 
   const emitAggregateIfNeeded = (currentIdx: number, force: boolean = false) => {
     const processed = currentIdx + 1;
@@ -501,7 +555,9 @@ async function addWaybillsOneByOne(
     const intervalFail = newFail - batchFail;
 
     if (intervalSuccess > 0 || intervalFail > 0 || force) {
-      log('info', `[${batchLabel}] Batch进度: ${intervalEnd}/${batch.length} (成功${newSuccess}, 失败${newFail})`);
+      const intervalElapsed = Date.now() - lastAggregateAt;
+      log('info', `[${batchLabel}] Batch进度: ${intervalEnd}/${batch.length} (成功${newSuccess}, 失败${newFail}, 区间${intervalStart}-${intervalEnd}耗时${intervalElapsed}ms)`);
+      lastAggregateAt = Date.now();
     }
     batchSuccess = newSuccess;
     batchFail = newFail;
@@ -510,27 +566,41 @@ async function addWaybillsOneByOne(
 
   for (let i = 0; i < batch.length; i++) {
     const waybillNo = batch[i];
+    const itemStart = Date.now();
+    const itemPerf: string[] = [];
+    const itemStep = async <T>(label: string, fn: () => Promise<T>): Promise<T> => {
+      const start = Date.now();
+      try {
+        return await fn();
+      } finally {
+        itemPerf.push(`${label}=${Date.now() - start}ms`);
+      }
+    };
 
     try {
       // 添加前表格行数
-      const rowsBefore = await countTableRows(page);
+      const rowsBefore = await itemStep('countBefore', () => countTableRows(page));
 
       // 填入单号
-      await page.fill(INTEGRATED_SCAN_SELECTORS.waybillInput, waybillNo, { timeout: TIMEOUT_ELEMENT });
+      await itemStep('fill', () =>
+        page.fill(INTEGRATED_SCAN_SELECTORS.waybillInput, waybillNo, { timeout: TIMEOUT_ELEMENT }),
+      );
 
       // Phase L-2: 验证 fill 后 input 真实值（防止前端防抖截断或 SPA 重渲染抢焦）
       const inputLoc = page.locator(INTEGRATED_SCAN_SELECTORS.waybillInput);
-      const actualValue = await inputLoc.first().inputValue().catch(() => '');
+      const actualValue = await itemStep('verifyInput', () => inputLoc.first().inputValue().catch(() => ''));
       if (actualValue.trim() !== waybillNo.trim()) {
         throw new Error(`填入单号验证失败: 预期="${waybillNo}", 实际="${actualValue}"`);
       }
 
       // 点击添加（用 locator().first() 避免 strict mode 多匹配报错）
-      await page.locator(INTEGRATED_SCAN_SELECTORS.addButton).first().click({ timeout: TIMEOUT_BUTTON });
-      await page.waitForTimeout(ADD_INTERVAL);
+      await itemStep('clickAdd', () =>
+        fastStableBypassClick(page.locator(INTEGRATED_SCAN_SELECTORS.addButton).first(), TIMEOUT_BUTTON),
+      );
+      await itemStep('waitAfterClick', () => page.waitForTimeout(ADD_INTERVAL));
 
       // 添加后表格行数
-      const rowsAfter = await countTableRows(page);
+      const rowsAfter = await itemStep('countAfter', () => countTableRows(page));
 
       if (rowsAfter > rowsBefore) {
         // 行数增加 → 添加成功
@@ -559,6 +629,12 @@ async function addWaybillsOneByOne(
       log('error', `[${batchLabel}] ${i + 1}/${batch.length} ${waybillNo} 添加异常: ${(e as Error).message}`);
     }
 
+    const itemElapsed = Date.now() - itemStart;
+    if (itemElapsed >= SLOW_STEP_MS) {
+      const formState = await inspectAddFormState(page);
+      log('warning', `[${batchLabel}] PERF addWaybill slow ${i + 1}/${batch.length} ${waybillNo} ${itemElapsed}ms (${itemPerf.join(', ')}; ${formState})`);
+    }
+
     // 每 AGGREGATE_INTERVAL 条或最后一条输出聚合进度
     emitAggregateIfNeeded(i);
   }
@@ -575,6 +651,35 @@ async function addWaybillsOneByOne(
 async function countTableRows(page: Page): Promise<number> {
   const rowsLoc = page.locator(INTEGRATED_TABLE_ROW_SELECTOR);
   return await rowsLoc.count();
+}
+
+async function inspectAddFormState(page: Page): Promise<string> {
+  return await page.evaluate(() => {
+    const input = document.querySelector('#waybillNum') as HTMLInputElement | null;
+    const addBtn = document.querySelector('.arrivalscan_left button.el-button--primary') as HTMLButtonElement | null;
+    const messages = Array.from(document.querySelectorAll('.el-message, .el-notification'))
+      .filter(el => {
+        const style = window.getComputedStyle(el);
+        return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+      })
+      .map(el => (el.textContent || '').trim())
+      .filter(Boolean)
+      .slice(0, 3);
+    const loadingCount = Array.from(document.querySelectorAll('.el-loading-mask'))
+      .filter(el => {
+        const style = window.getComputedStyle(el);
+        return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+      }).length;
+
+    return [
+      `inputDisabled=${input?.disabled ?? 'missing'}`,
+      `inputReadonly=${input?.readOnly ?? 'missing'}`,
+      `buttonDisabled=${addBtn?.disabled ?? 'missing'}`,
+      `buttonLoading=${addBtn?.classList.contains('is-loading') ?? 'missing'}`,
+      `loadingMasks=${loadingCount}`,
+      `messages=${messages.length ? messages.join('|') : '-'}`,
+    ].join(', ');
+  }).catch(err => `inspect failed: ${(err as Error).message}`);
 }
 
 /**
@@ -725,18 +830,37 @@ async function uploadAndJudge(
     }));
   }
 
+  // Phase 5-I-1: 安全门 — dryRun=false 但未开启真实提交开关
+  if (!SettingsManager.isRealSubmitAllowed()) {
+    log('warning', `[安全门] 真实执行开关已传递到执行层，但当前未开启 ENABLE_REAL_SUBMIT，跳过最终提交 (${addedWaybills.length}条)`);
+    return addedWaybills.map(no => ({
+      waybillNo: no,
+      staffName,
+      success: true,
+      status: 'SAFETY_GATE_SKIPPED',
+      message: '[安全门拦截] 真实执行开关已打通，但未开启最终提交保护开关，未点击提交按钮',
+      timestamp: Date.now(),
+      dryRun: true,
+      skippedFinalSubmit: true,
+    }));
+  }
+
   log('info', `[真实执行模式] 即将点击"上传"按钮，执行真实到派一体提交 (${addedWaybills.length}条)`);
   // 真实上传
   log('info', `[${batchLabel}] 点击上传 (${addedWaybills.length}条)`);
-  await takeScreenshot(page, `${batchLabel}_before_upload`);
+  await takeDiagnosticScreenshot(page, `${batchLabel}_before_upload`);
 
   // Phase L-2: 记录上传前表格行数（用于 DOM 回退判定）
   const rowLoc = page.locator(INTEGRATED_TABLE_ROW_SELECTOR);
-  const rowsBeforeUpload = await rowLoc.count().catch(() => -1);
+  const rowsBeforeUpload = await timedStep(log, batchLabel, 'upload.countRowsBefore', () =>
+    rowLoc.count().catch(() => -1),
+  );
 
   let clicked = false;
   try {
-    await page.locator(INTEGRATED_SCAN_SELECTORS.uploadButton).first().click({ timeout: TIMEOUT_BUTTON });
+    await timedStep(log, batchLabel, 'upload.clickButton', () =>
+      page.locator(INTEGRATED_SCAN_SELECTORS.uploadButton).first().click({ timeout: TIMEOUT_BUTTON }),
+    );
     clicked = true;
   } catch (e) {
     log('warning', `[${batchLabel}] 点击上传按钮失败: ${(e as Error).message}`);
@@ -747,22 +871,24 @@ async function uploadAndJudge(
   }
 
   // 点击"上传"后，系统弹出确认弹窗（"是否确认提交?"），需点击"确定"才真正提交
-  await clickUploadConfirmDialog(page, batchLabel, log);
+  await timedStep(log, batchLabel, 'upload.confirmDialog', () => clickUploadConfirmDialog(page, batchLabel, log));
 
-  await takeScreenshot(page, `${batchLabel}_after_upload`);
+  await takeDiagnosticScreenshot(page, `${batchLabel}_after_upload`);
 
   // Phase L-2: Toast 重试 + DOM 回退判定（与到件/派件扫描保持一致）
-  let toastMsg = await waitForToast(page, TIMEOUT_TOAST);
+  let toastMsg = await timedStep(log, batchLabel, 'upload.waitToast', () => waitForToast(page, TIMEOUT_TOAST));
 
   if (toastMsg.includes('timeout:未收到系统响应')) {
     log('warning', `[${batchLabel}] 首次 toast 超时，等待 2s 后重试`);
     await page.waitForTimeout(2000);
-    toastMsg = await waitForToast(page, 5000);
+    toastMsg = await timedStep(log, batchLabel, 'upload.waitToastRetry', () => waitForToast(page, 5000));
 
     if (toastMsg.includes('timeout:未收到系统响应')) {
       // DOM 回退判定：对比上传前后表格行数变化
       log('warning', `[${batchLabel}] 二次 toast 仍超时，使用 DOM 回退判定`);
-      const rowsAfterUpload = await rowLoc.count().catch(() => -1);
+      const rowsAfterUpload = await timedStep(log, batchLabel, 'upload.countRowsAfterFallback', () =>
+        rowLoc.count().catch(() => -1),
+      );
 
       if (rowsBeforeUpload >= 0 && rowsAfterUpload === 0) {
         toastMsg = '批量到件成功';
@@ -784,7 +910,7 @@ async function uploadAndJudge(
   const outcome = parseArriveScanResult(toastMsg, addedWaybills.length);
   log('info', `[${batchLabel}] 判定: status=${outcome.status}, success=${outcome.successCount ?? '?'}, fail=${outcome.failCount ?? '?'}`);
 
-  await takeScreenshot(page, `${batchLabel}_done`);
+  await takeDiagnosticScreenshot(page, `${batchLabel}_done`);
 
   // PARTIAL/UNKNOWN 无法按单号归因，全批统一标记（与到件/派件扫描一致）
   return addedWaybills.map(no => ({
@@ -805,4 +931,3 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
   }
   return chunks;
 }
-

@@ -5,6 +5,12 @@ import fs from 'fs-extra';
 // bnsy-operator-next: 截图保存到 runtime/screenshots（与生产项目 logs/screenshots 隔离）
 const SCREENSHOT_DIR = path.join(process.cwd(), 'runtime', 'screenshots');
 
+/** Phase 5-G-8: 全局截图开关 */
+function isScreenshotEnabled(): boolean {
+  return process.env.ENABLE_RUNTIME_SCREENSHOTS === '1'
+    || process.env.ENABLE_RUNTIME_SCREENSHOTS === 'true';
+}
+
 function pad2(n: number): string {
   return String(n).padStart(2, '0');
 }
@@ -27,6 +33,8 @@ export async function captureSignFailureScreenshot(
   page: Page,
   opts: FailureScreenshotOptions,
 ): Promise<string> {
+  // Phase 5-G-8: 默认关闭截图
+  if (!isScreenshotEnabled()) return '';
   const { pageNum, signer, label } = opts;
   try {
     await fs.ensureDir(SCREENSHOT_DIR);

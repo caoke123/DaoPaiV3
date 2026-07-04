@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Loader2, ChevronDown, RotateCw, X, RefreshCw, AlertTriangle, Monitor, LogOut,
+  Loader2, ChevronDown, RotateCw, X, RefreshCw, AlertTriangle, Monitor, LogOut, Trash2,
 } from 'lucide-react';
 import { useAuth } from '../../stores/authStore';
 import {
@@ -13,6 +13,7 @@ import {
   toggleWindow,
   closePlaywrightWindow,
   reconnectEasyBR,
+  resetAllTasks,
   type SiteWindowState,
   type PlaywrightSiteWindowState,
 } from '../../api/client';
@@ -66,6 +67,13 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
   const [launchMsg, setLaunchMsg] = useState('');
   const [reconnecting, setReconnecting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  // Phase K-3A-2-Prep: 任务重置
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [resetMsg, setResetMsg] = useState('');
+  const [resetError, setResetError] = useState('');
+
+  const { resetTask } = useTaskExecution();
 
   // 手动点击刷新按钮：带 loading 视觉反馈
   // 最小显示 400ms，避免请求太快导致旋转动画一闪而过无法感知
@@ -81,6 +89,34 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
       setRefreshing(false);
     }
   }, [refreshing, fetchSiteWindows]);
+
+  // Phase K-3A-2-Prep: 清除所有任务数据
+  const handleResetTasks = useCallback(async () => {
+    if (resetting) return;
+    setResetting(true);
+    setResetError('');
+    setResetMsg('');
+    try {
+      const result = await resetAllTasks();
+      setResetMsg(result.message || '任务数据已清理');
+      // 清空前端任务状态
+      resetTask();
+      // 刷新窗口状态
+      await fetchSiteWindows();
+    } catch (err) {
+      setResetError((err as Error).message || '清理失败');
+    } finally {
+      setResetting(false);
+      setShowResetConfirm(false);
+    }
+  }, [resetting, resetTask, fetchSiteWindows]);
+
+  // 点击重置按钮：弹出确认框
+  const handleResetClick = useCallback(() => {
+    setResetError('');
+    setResetMsg('');
+    setShowResetConfirm(true);
+  }, []);
 
   // ── Phase 4-I-3: 统一 windowKey 与 mark/clear 辅助函数 ──
   //   单窗口启动 / 一键启动 / close 清理 都调用同一组函数，避免 key 不一致
@@ -671,6 +707,19 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
             <div className="w-px h-4 bg-[var(--border)]" />
           </>
         )}
+        {/* Phase K-3A-2-Prep: 任务重置按钮 */}
+        <button
+          onClick={handleResetClick}
+          disabled={resetting}
+          className="p-1 rounded hover:bg-[var(--warn-soft)] text-[var(--text-3)] hover:text-[var(--warn)] transition disabled:opacity-40"
+          title="清理任务数据"
+        >
+          {resetting ? (
+            <Loader2 className="w-3 h-3 animate-spin" />
+          ) : (
+            <Trash2 className="w-3 h-3" />
+          )}
+        </button>
         {/* 刷新 + 时钟 */}
         <button
           onClick={handleRefresh}
@@ -693,6 +742,57 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
               ? '本地浏览器运行时未就绪，请启动本地执行端后重试。任务中心历史数据仍可查看。'
               : '本地浏览器运行时状态异常，部分窗口或任务可能不可用。'}
           </span>
+        </div>
+      )}
+      {/* Phase K-3A-2-Prep: 任务重置确认弹窗 */}
+      {showResetConfirm && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40" onClick={() => { setShowResetConfirm(false); setResetError(''); }}>
+          <div className="bg-white rounded-lg shadow-xl p-6 w-[420px] max-w-[90vw]" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-[15px] font-semibold text-[var(--text-1)]">清理任务数据</h3>
+              <button
+                onClick={() => { setShowResetConfirm(false); setResetError(''); }}
+                className="p-1 rounded hover:bg-surface-light text-text-tertiary"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="text-[13px] text-[var(--text-2)] leading-relaxed space-y-2 mb-4">
+              <p className="text-[var(--warn)] font-medium">确认清理所有任务数据？</p>
+              <p>这会删除任务中心历史任务、任务日志和运单执行结果。</p>
+              <p>不会删除站点、员工、窗口配置。</p>
+            </div>
+
+            {resetMsg && (
+              <div className="mb-3 text-[12px] bg-[var(--ok-soft)] text-[var(--ok)] rounded px-3 py-2">
+                {resetMsg}
+              </div>
+            )}
+            {resetError && (
+              <div className="mb-3 text-[12px] bg-[var(--err-soft)] text-[var(--err)] rounded px-3 py-2">
+                清理失败：{resetError}
+              </div>
+            )}
+
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => { setShowResetConfirm(false); setResetError(''); }}
+                disabled={resetting}
+                className="px-4 py-1.5 text-[13px] rounded border border-[var(--border)] text-[var(--text-2)] hover:bg-surface-light transition disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleResetTasks}
+                disabled={resetting}
+                className="px-4 py-1.5 text-[13px] rounded bg-[var(--err)] text-white hover:opacity-90 transition disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {resetting && <Loader2 className="w-3 h-3 animate-spin" />}
+                确认清理任务
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </header>

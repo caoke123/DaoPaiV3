@@ -60,11 +60,18 @@ export const ARRIVAL_BATCH_SELECTORS = {
   prevStationInput:
     '#app > div.app-wrapper.openSidebar > div.main-container.hasTagsView > section > div > div:nth-child(6) > div > div.el-input.el-input--medium.el-input--suffix > input',
 
-  /** 5b. "上一站"下拉选项（通过文本匹配 DEFAULT_PREV_STATION，过滤后唯一可见项）
+  /** 5b. "上一站"下拉选项
    *  来源：arrivalScanBatch.selectors.ts:49-50
    *  旧代码使用位置：ArriveScanBatch.ts:185-188
    *  注意：el-select-dropdown 是 body 下的浮层，不在 #app 内
+   *
+   *  Phase I-4-Arrival-Fix: 改为动态函数，根据实际 prevStation 生成选择器，
+   *  避免硬编码 DEFAULT_PREV_STATION 导致自定义上一站无法匹配。
    */
+  getPrevStationOption: (text: string) =>
+    `body > div.el-select-dropdown.el-popper li.el-select-dropdown__item:has-text("${text}")`,
+
+  /** @deprecated 使用 getPrevStationOption(text) 替代，避免硬编码 */
   prevStationOption: `body > div.el-select-dropdown.el-popper li.el-select-dropdown__item:has-text("${DEFAULT_PREV_STATION}")`,
 
   /** 6. "查询"按钮（primary 样式）

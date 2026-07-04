@@ -112,7 +112,7 @@ export async function reportProgress(
 export async function uploadLogs(
   client: AxiosInstance,
   taskId: string,
-  logs: Array<{ level: string; message: string; timestamp: string; staffName?: string }>,
+  logs: Array<{ level: string; message: string; timestamp: string; staffName?: string; windowId?: string; siteId?: string }>,
 ): Promise<void> {
   await client.post(`/agent/tasks/${taskId}/logs`, { logs });
 }
@@ -143,4 +143,44 @@ export async function failTask(
   await client.post(`/agent/tasks/${taskId}/fail`, {
     error: { code: 'UNKNOWN_ERROR', message: errorMessage },
   });
+}
+
+// ── Phase K-3A-2: READY 窗口连接查询 ──
+
+export interface WindowConnection {
+  runtimeKey: string;
+  windowId: string;
+  staffName: string | null;
+  windowName: string | null;
+  tenantId: string;
+  siteId: string;
+  status: string;
+  currentUrl: string | null;
+  isLoggedIn: boolean | null;
+  cdpPort: number | null;
+  cdpEndpoint: string | null;
+  cdpAttachable: boolean;
+}
+
+export interface WindowConnectionsResponse {
+  windows: WindowConnection[];
+  total: number;
+}
+
+/**
+ * GET /agent/window-connections — 查询当前 tenant 下所有 Playwright 窗口的连接信息
+ *
+ * 用途：Agent pull 到 arrival task 后，先调此接口查找匹配 staffName 的 READY 窗口，
+ *       若窗口 cdpAttachable=true 且 status=ready，则使用 connectOverCDP 接管已有 Chrome。
+ */
+export async function queryWindowConnections(
+  client: AxiosInstance,
+  filters?: { staffName?: string; status?: string; siteId?: string },
+): Promise<WindowConnectionsResponse> {
+  const params: Record<string, string> = {};
+  if (filters?.staffName) params.staffName = filters.staffName;
+  if (filters?.status) params.status = filters.status;
+  if (filters?.siteId) params.siteId = filters.siteId;
+  const res = await client.get('/agent/window-connections', { params, timeout: 10_000 });
+  return res.data.data;
 }

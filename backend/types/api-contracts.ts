@@ -19,10 +19,10 @@
 // ══════════════════════════════════════════════════════════════
 
 /** 任务生命周期状态 */
-export type TaskStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
+export type TaskStatus = 'pending' | 'assigned' | 'running' | 'done' | 'failed' | 'cancelled';
 
 /** 任务类型 */
-export type TaskType = 'arrive' | 'dispatch' | 'sign' | 'integrated' | 'init_window';
+export type TaskType = 'arrive' | 'arrival' | 'dispatch' | 'sign' | 'integrated' | 'init_window' | 'agent_test';
 
 /** 窗口角色 */
 export type WindowRole = 'admin' | 'staff';
@@ -31,7 +31,7 @@ export type WindowRole = 'admin' | 'staff';
 export type LogLevel = 'info' | 'success' | 'warning' | 'error';
 
 /** 运单结果详细状态 */
-export type WaybillResultStatus = 'SUCCESS' | 'PARTIAL' | 'FAILED' | 'UNKNOWN_NEEDS_MANUAL_CHECK' | 'DRY_RUN_SKIPPED';
+export type WaybillResultStatus = 'SUCCESS' | 'PARTIAL' | 'FAILED' | 'UNKNOWN_NEEDS_MANUAL_CHECK' | 'DRY_RUN_SKIPPED' | 'SAFETY_GATE_SKIPPED';
 
 // ══════════════════════════════════════════════════════════════
 // 二、核心业务实体
