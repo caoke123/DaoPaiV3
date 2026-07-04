@@ -1137,7 +1137,7 @@ export async function createArrivalDryRunTask(params: CreateArrivalDryRunParams)
   const resp = await fetchWithAuth(`${BASE}/cloud/agent-arrival-task`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...params, browserDryRun: true }),
+    body: JSON.stringify(params),
   });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ error: '请求失败' }));
@@ -1162,7 +1162,7 @@ export async function createAgentDispatchTask(params: CreateAgentDispatchParams)
   const resp = await fetchWithAuth(`${BASE}/cloud/agent-dispatch-task`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...params, browserDryRun: true }),
+    body: JSON.stringify(params),
   });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ error: '请求失败' }));
@@ -1187,7 +1187,7 @@ export async function createAgentIntegratedTask(params: CreateAgentIntegratedPar
   const resp = await fetchWithAuth(`${BASE}/cloud/agent-integrated-task`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...params, browserDryRun: true }),
+    body: JSON.stringify(params),
   });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ error: '请求失败' }));
@@ -1212,7 +1212,7 @@ export async function createAgentSignTask(params: CreateAgentSignParams): Promis
   const resp = await fetchWithAuth(`${BASE}/cloud/agent-sign-task`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...params, browserDryRun: true }),
+    body: JSON.stringify(params),
   });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ error: '请求失败' }));

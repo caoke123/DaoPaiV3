@@ -2215,7 +2215,7 @@ router.post('/api/cloud/agent-test-task', async (req: Request, res: Response) =>
 router.post('/api/cloud/agent-arrival-task', async (req: Request, res: Response) => {
   try {
     const tenantId = getTenantId(req);
-    const { siteId, siteName, waybills, options, browserDryRun } = req.body || {};
+    const { siteId, siteName, waybills, options } = req.body || {};
 
     if (!siteId) {
       return res.status(400).json({ error: '缺少 siteId 参数' });
@@ -2223,6 +2223,9 @@ router.post('/api/cloud/agent-arrival-task', async (req: Request, res: Response)
     if (!waybills || !Array.isArray(waybills) || waybills.length === 0) {
       return res.status(400).json({ error: 'waybills 必须是非空数组' });
     }
+
+    // Phase M-2B: 运行模式以 settings.json 中的 dryRunMode 为唯一来源
+    const resolvedDryRun = await SettingsManager.getInstance().getDryRunMode();
 
     const pg = PgDatabase.getInstance();
     const taskId = await pg.insertTask({
@@ -2234,13 +2237,13 @@ router.post('/api/cloud/agent-arrival-task', async (req: Request, res: Response)
         waybills,
         options: options || {},
         siteName: siteName || siteId,
-        dryRun: true,
-        browserDryRun: browserDryRun === true,
+        dryRun: resolvedDryRun,
+        browserDryRun: resolvedDryRun,
       },
       tenantId,
     });
 
-    res.json({ ok: true, taskId, message: 'Arrival DRY-RUN 任务已创建', waybillCount: waybills.length, browserDryRun: browserDryRun === true });
+    res.json({ ok: true, taskId, message: 'Arrival DRY-RUN 任务已创建', waybillCount: waybills.length, browserDryRun: resolvedDryRun });
   } catch (e) {
     console.error('[POST /api/cloud/agent-arrival-task] 失败:', (e as Error).message);
     res.status(500).json({ error: (e as Error).message });
@@ -2251,7 +2254,7 @@ router.post('/api/cloud/agent-arrival-task', async (req: Request, res: Response)
 router.post('/api/cloud/agent-dispatch-task', async (req: Request, res: Response) => {
   try {
     const tenantId = getTenantId(req);
-    const { siteId, siteName, waybills, options, browserDryRun, courierName } = req.body || {};
+    const { siteId, siteName, waybills, options, courierName } = req.body || {};
 
     if (!siteId) {
       return res.status(400).json({ error: '缺少 siteId 参数' });
@@ -2259,6 +2262,9 @@ router.post('/api/cloud/agent-dispatch-task', async (req: Request, res: Response
     if (!waybills || !Array.isArray(waybills) || waybills.length === 0) {
       return res.status(400).json({ error: 'waybills 必须是非空数组' });
     }
+
+    // Phase M-2B: 运行模式以 settings.json 中的 dryRunMode 为唯一来源
+    const resolvedDryRun = await SettingsManager.getInstance().getDryRunMode();
 
     const mergedOptions = { ...(options || {}), ...(courierName ? { courierName } : {}) };
 
@@ -2272,13 +2278,13 @@ router.post('/api/cloud/agent-dispatch-task', async (req: Request, res: Response
         waybills,
         options: mergedOptions,
         siteName: siteName || siteId,
-        dryRun: true,
-        browserDryRun: browserDryRun === true,
+        dryRun: resolvedDryRun,
+        browserDryRun: resolvedDryRun,
       },
       tenantId,
     });
 
-    res.json({ ok: true, taskId, message: 'Dispatch DRY-RUN 任务已创建', waybillCount: waybills.length, browserDryRun: browserDryRun === true });
+    res.json({ ok: true, taskId, message: 'Dispatch DRY-RUN 任务已创建', waybillCount: waybills.length, browserDryRun: resolvedDryRun });
   } catch (e) {
     console.error('[POST /api/cloud/agent-dispatch-task] 失败:', (e as Error).message);
     res.status(500).json({ error: (e as Error).message });
@@ -2289,7 +2295,7 @@ router.post('/api/cloud/agent-dispatch-task', async (req: Request, res: Response
 router.post('/api/cloud/agent-integrated-task', async (req: Request, res: Response) => {
   try {
     const tenantId = getTenantId(req);
-    const { siteId, siteName, waybills, options, browserDryRun, courierName, courierEmployeeId, prevStation } = req.body || {};
+    const { siteId, siteName, waybills, options, courierName, courierEmployeeId, prevStation } = req.body || {};
 
     if (!siteId) {
       return res.status(400).json({ error: '缺少 siteId 参数' });
@@ -2297,6 +2303,9 @@ router.post('/api/cloud/agent-integrated-task', async (req: Request, res: Respon
     if (!waybills || !Array.isArray(waybills) || waybills.length === 0) {
       return res.status(400).json({ error: 'waybills 必须是非空数组' });
     }
+
+    // Phase M-2B: 运行模式以 settings.json 中的 dryRunMode 为唯一来源
+    const resolvedDryRun = await SettingsManager.getInstance().getDryRunMode();
 
     const mergedOptions = {
       ...(options || {}),
@@ -2315,13 +2324,13 @@ router.post('/api/cloud/agent-integrated-task', async (req: Request, res: Respon
         waybills,
         options: mergedOptions,
         siteName: siteName || siteId,
-        dryRun: true,
-        browserDryRun: browserDryRun === true,
+        dryRun: resolvedDryRun,
+        browserDryRun: resolvedDryRun,
       },
       tenantId,
     });
 
-    res.json({ ok: true, taskId, message: 'Integrated DRY-RUN 任务已创建', waybillCount: waybills.length, browserDryRun: browserDryRun === true });
+    res.json({ ok: true, taskId, message: 'Integrated DRY-RUN 任务已创建', waybillCount: waybills.length, browserDryRun: resolvedDryRun });
   } catch (e) {
     console.error('[POST /api/cloud/agent-integrated-task] 失败:', (e as Error).message);
     res.status(500).json({ error: (e as Error).message });
@@ -2332,7 +2341,7 @@ router.post('/api/cloud/agent-integrated-task', async (req: Request, res: Respon
 router.post('/api/cloud/agent-sign-task', async (req: Request, res: Response) => {
   try {
     const tenantId = getTenantId(req);
-    const { siteId, siteName, waybills, options, browserDryRun, courierName } = req.body || {};
+    const { siteId, siteName, waybills, options, courierName } = req.body || {};
 
     if (!siteId) {
       return res.status(400).json({ error: '缺少 siteId 参数' });
@@ -2340,6 +2349,9 @@ router.post('/api/cloud/agent-sign-task', async (req: Request, res: Response) =>
     if (!waybills || !Array.isArray(waybills) || waybills.length === 0) {
       return res.status(400).json({ error: 'waybills 必须是非空数组' });
     }
+
+    // Phase M-2B: 运行模式以 settings.json 中的 dryRunMode 为唯一来源
+    const resolvedDryRun = await SettingsManager.getInstance().getDryRunMode();
 
     const mergedOptions = { ...(options || {}), ...(courierName ? { courierName } : {}) };
 
@@ -2353,13 +2365,13 @@ router.post('/api/cloud/agent-sign-task', async (req: Request, res: Response) =>
         waybills,
         options: mergedOptions,
         siteName: siteName || siteId,
-        dryRun: true,
-        browserDryRun: browserDryRun === true,
+        dryRun: resolvedDryRun,
+        browserDryRun: resolvedDryRun,
       },
       tenantId,
     });
 
-    res.json({ ok: true, taskId, message: 'Sign DRY-RUN 任务已创建', waybillCount: waybills.length, browserDryRun: browserDryRun === true });
+    res.json({ ok: true, taskId, message: 'Sign DRY-RUN 任务已创建', waybillCount: waybills.length, browserDryRun: resolvedDryRun });
   } catch (e) {
     console.error('[POST /api/cloud/agent-sign-task] 失败:', (e as Error).message);
     res.status(500).json({ error: (e as Error).message });

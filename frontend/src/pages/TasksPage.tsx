@@ -33,6 +33,7 @@ import {
   type WorkerStat,
   type DeleteStatsResponse,
 } from '../api/client';
+import { useRuntimeMode } from '../components/shared/RuntimeModeProvider';
 
 // ── Phase 3: input_data 解析 ──
 
@@ -947,6 +948,9 @@ export default function TasksPage() {
   const [selectedTask, setSelectedTask] = useState<TaskItem | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
+  // ── Phase M-2B: 接入设置中心运行模式开关 ──
+  const { dryRunMode } = useRuntimeMode();
+
   useEffect(() => {
     if (selectedTask) {
       setDrawerOpen(false);
@@ -1206,7 +1210,7 @@ export default function TasksPage() {
         siteName: '天南大',
         waybills,
         options: { prevStation: '天津分拨中心', batchSize: 200 },
-        browserDryRun: true,
+        browserDryRun: dryRunMode,
       });
       setToastMsg(`到件 DRY-RUN 任务已创建：${resp.taskId.slice(0, 8)}...`);
       setShowDryRunModal(false);
@@ -1237,7 +1241,7 @@ export default function TasksPage() {
         courierName: '肖飞',
         waybills,
         options: { prevStation: '天津分拨中心', batchSize: 200 },
-        browserDryRun: true,
+        browserDryRun: dryRunMode,
       });
       setToastMsg(`派件 DRY-RUN 任务已创建：${resp.taskId.slice(0, 8)}...`);
       setShowDispatchModal(false);
@@ -1268,7 +1272,7 @@ export default function TasksPage() {
         courierName: '肖飞',
         waybills,
         options: { prevStation: '天津分拨中心', batchSize: 200 },
-        browserDryRun: true,
+        browserDryRun: dryRunMode,
       });
       setToastMsg(`到派一体 DRY-RUN 任务已创建：${resp.taskId.slice(0, 8)}...`);
       setShowIntegratedModal(false);
@@ -1299,7 +1303,7 @@ export default function TasksPage() {
         courierName: '肖飞',
         waybills,
         options: { prevStation: '天津分拨中心', batchSize: 200 },
-        browserDryRun: true,
+        browserDryRun: dryRunMode,
       });
       setToastMsg(`签收 DRY-RUN 任务已创建：${resp.taskId.slice(0, 8)}...`);
       setShowSignModal(false);
