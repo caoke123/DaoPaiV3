@@ -34,6 +34,7 @@ import {
   type DeleteStatsResponse,
 } from '../api/client';
 import { useRuntimeMode } from '../components/shared/RuntimeModeProvider';
+import { useWindowState } from '../components/shared/WindowStateProvider';
 
 // ── Phase 3: input_data 解析 ──
 
@@ -951,6 +952,11 @@ export default function TasksPage() {
   // ── Phase M-2B: 接入设置中心运行模式开关 ──
   const { dryRunMode } = useRuntimeMode();
 
+  // ── Phase M-3B: 动态站点上下文，替代硬编码 siteId ──
+  const { activeSiteId, sites, siteName: ctxSiteName } = useWindowState();
+  const currentSiteName = sites.find(s => s.id === activeSiteId)?.name || ctxSiteName;
+  const currentSiteId = activeSiteId;
+
   useEffect(() => {
     if (selectedTask) {
       setDrawerOpen(false);
@@ -1181,7 +1187,7 @@ export default function TasksPage() {
     const tempTask: TaskItem = {
       id: taskId,
       type,
-      site: 'site-1782121346155',
+      site: currentSiteId,
       siteName,
       status: 'pending',
       totalCount: waybillCount,
@@ -1195,6 +1201,7 @@ export default function TasksPage() {
 
   // ── Phase 5-E: 创建到件浏览器 DRY-RUN 任务 ──
   const handleCreateDryRun = async () => {
+    if (!currentSiteId) { setToastMsg('无法获取当前网点，请先在设置中配置网点'); return; }
     const waybills = dryRunWaybills
       .split('\n')
       .map(s => s.trim())
@@ -1206,15 +1213,15 @@ export default function TasksPage() {
     setDryRunCreating(true);
     try {
       const resp = await createArrivalDryRunTask({
-        siteId: 'site-1782121346155',
-        siteName: '天南大',
+        siteId: currentSiteId,
+        siteName: currentSiteName,
         waybills,
         options: { prevStation: '天津分拨中心', batchSize: 200 },
-        browserDryRun: dryRunMode,
+        dryRunMode,
       });
       setToastMsg(`到件 DRY-RUN 任务已创建：${resp.taskId.slice(0, 8)}...`);
       setShowDryRunModal(false);
-      openTaskDrawer(resp.taskId, 'arrival', '天南大', waybills.length);
+      openTaskDrawer(resp.taskId, 'arrival', currentSiteName, waybills.length);
       setTimeout(() => loadTasks(), 500);
     } catch (e) {
       setToastMsg(`创建失败：${(e as Error).message}`);
@@ -1225,6 +1232,7 @@ export default function TasksPage() {
 
   // ── Phase 5-E: 创建派件浏览器 DRY-RUN 任务 ──
   const handleCreateDispatch = async () => {
+    if (!currentSiteId) { setToastMsg('无法获取当前网点，请先在设置中配置网点'); return; }
     const waybills = dispatchWaybills
       .split('\n')
       .map(s => s.trim())
@@ -1236,16 +1244,16 @@ export default function TasksPage() {
     setDispatchCreating(true);
     try {
       const resp = await createAgentDispatchTask({
-        siteId: 'site-1782121346155',
-        siteName: '天南大',
+        siteId: currentSiteId,
+        siteName: currentSiteName,
         courierName: '肖飞',
         waybills,
         options: { prevStation: '天津分拨中心', batchSize: 200 },
-        browserDryRun: dryRunMode,
+        dryRunMode,
       });
       setToastMsg(`派件 DRY-RUN 任务已创建：${resp.taskId.slice(0, 8)}...`);
       setShowDispatchModal(false);
-      openTaskDrawer(resp.taskId, 'dispatch', '天南大', waybills.length);
+      openTaskDrawer(resp.taskId, 'dispatch', currentSiteName, waybills.length);
       setTimeout(() => loadTasks(), 500);
     } catch (e) {
       setToastMsg(`创建失败：${(e as Error).message}`);
@@ -1256,6 +1264,7 @@ export default function TasksPage() {
 
   // ── Phase 5-E: 创建到派一体浏览器 DRY-RUN 任务 ──
   const handleCreateIntegrated = async () => {
+    if (!currentSiteId) { setToastMsg('无法获取当前网点，请先在设置中配置网点'); return; }
     const waybills = integratedWaybills
       .split('\n')
       .map(s => s.trim())
@@ -1267,16 +1276,16 @@ export default function TasksPage() {
     setIntegratedCreating(true);
     try {
       const resp = await createAgentIntegratedTask({
-        siteId: 'site-1782121346155',
-        siteName: '天南大',
+        siteId: currentSiteId,
+        siteName: currentSiteName,
         courierName: '肖飞',
         waybills,
         options: { prevStation: '天津分拨中心', batchSize: 200 },
-        browserDryRun: dryRunMode,
+        dryRunMode,
       });
       setToastMsg(`到派一体 DRY-RUN 任务已创建：${resp.taskId.slice(0, 8)}...`);
       setShowIntegratedModal(false);
-      openTaskDrawer(resp.taskId, 'integrated', '天南大', waybills.length);
+      openTaskDrawer(resp.taskId, 'integrated', currentSiteName, waybills.length);
       setTimeout(() => loadTasks(), 500);
     } catch (e) {
       setToastMsg(`创建失败：${(e as Error).message}`);
@@ -1287,6 +1296,7 @@ export default function TasksPage() {
 
   // ── Phase 5-E: 创建签收浏览器 DRY-RUN 任务 ──
   const handleCreateSign = async () => {
+    if (!currentSiteId) { setToastMsg('无法获取当前网点，请先在设置中配置网点'); return; }
     const waybills = signWaybills
       .split('\n')
       .map(s => s.trim())
@@ -1298,16 +1308,16 @@ export default function TasksPage() {
     setSignCreating(true);
     try {
       const resp = await createAgentSignTask({
-        siteId: 'site-1782121346155',
-        siteName: '天南大',
+        siteId: currentSiteId,
+        siteName: currentSiteName,
         courierName: '肖飞',
         waybills,
         options: { prevStation: '天津分拨中心', batchSize: 200 },
-        browserDryRun: dryRunMode,
+        dryRunMode,
       });
       setToastMsg(`签收 DRY-RUN 任务已创建：${resp.taskId.slice(0, 8)}...`);
       setShowSignModal(false);
-      openTaskDrawer(resp.taskId, 'sign', '天南大', waybills.length);
+      openTaskDrawer(resp.taskId, 'sign', currentSiteName, waybills.length);
       setTimeout(() => loadTasks(), 500);
     } catch (e) {
       setToastMsg(`创建失败：${(e as Error).message}`);
@@ -1832,7 +1842,7 @@ export default function TasksPage() {
                   className="w-full px-3 py-2 text-[13px] border border-border rounded-btn bg-surface-bg resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-60"
                   placeholder="TEST000000001&#10;TEST000000002"
                 />
-                <p className="text-[12px] text-text-tertiary mt-1">网点：天南大 · 上一站：天津分拨中心 · 浏览器 DRY-RUN 模式（不点击最终提交）</p>
+                <p className="text-[12px] text-text-tertiary mt-1">网点：{currentSiteName} · 上一站：天津分拨中心 · 浏览器 DRY-RUN 模式（不点击最终提交）</p>
               </div>
             </div>
             <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border bg-surface-bg rounded-b-card">
@@ -1884,7 +1894,7 @@ export default function TasksPage() {
                   className="w-full px-3 py-2 text-[13px] border border-border rounded-btn bg-surface-bg resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-60"
                   placeholder="TEST000000001&#10;TEST000000002"
                 />
-                <p className="text-[12px] text-text-tertiary mt-1">网点：天南大 · 派件员：肖飞 · 浏览器 DRY-RUN 模式（不点击最终提交）</p>
+                <p className="text-[12px] text-text-tertiary mt-1">网点：{currentSiteName} · 派件员：肖飞 · 浏览器 DRY-RUN 模式（不点击最终提交）</p>
               </div>
             </div>
             <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border bg-surface-bg rounded-b-card">
@@ -1936,7 +1946,7 @@ export default function TasksPage() {
                   className="w-full px-3 py-2 text-[13px] border border-border rounded-btn bg-surface-bg resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-60"
                   placeholder="TEST000000001&#10;TEST000000002"
                 />
-                <p className="text-[12px] text-text-tertiary mt-1">网点：天南大 · 派件员：肖飞 · 浏览器 DRY-RUN 模式（不点击最终提交）</p>
+                <p className="text-[12px] text-text-tertiary mt-1">网点：{currentSiteName} · 派件员：肖飞 · 浏览器 DRY-RUN 模式（不点击最终提交）</p>
               </div>
             </div>
             <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border bg-surface-bg rounded-b-card">
@@ -1988,7 +1998,7 @@ export default function TasksPage() {
                   className="w-full px-3 py-2 text-[13px] border border-border rounded-btn bg-surface-bg resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-60"
                   placeholder="TEST000000001&#10;TEST000000002"
                 />
-                <p className="text-[12px] text-text-tertiary mt-1">网点：天南大 · 派件员：肖飞 · 浏览器 DRY-RUN 模式（不点击最终提交）</p>
+                <p className="text-[12px] text-text-tertiary mt-1">网点：{currentSiteName} · 派件员：肖飞 · 浏览器 DRY-RUN 模式（不点击最终提交）</p>
               </div>
             </div>
             <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border bg-surface-bg rounded-b-card">

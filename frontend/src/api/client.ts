@@ -1129,7 +1129,8 @@ export interface CreateArrivalDryRunParams {
   siteName: string;
   waybills: string[];
   options?: { prevStation?: string; batchSize?: number };
-  browserDryRun?: boolean;
+  dryRunMode?: boolean;   // Phase M-3B: 主字段（兼容 browserDryRun）
+  browserDryRun?: boolean; // Phase M-3B: 兼容旧字段
 }
 
 /** POST /api/cloud/agent-arrival-task — 创建到件扫描浏览器 DRY-RUN 任务 */
@@ -1154,7 +1155,8 @@ export interface CreateAgentDispatchParams {
   courierName?: string;
   waybills: string[];
   options?: { prevStation?: string; batchSize?: number };
-  browserDryRun?: boolean;
+  dryRunMode?: boolean;   // Phase M-3B: 主字段
+  browserDryRun?: boolean; // Phase M-3B: 兼容旧字段
 }
 
 /** POST /api/cloud/agent-dispatch-task — 创建派件扫描浏览器 DRY-RUN 任务 */
@@ -1179,7 +1181,8 @@ export interface CreateAgentIntegratedParams {
   courierName?: string;
   waybills: string[];
   options?: { prevStation?: string; batchSize?: number };
-  browserDryRun?: boolean;
+  dryRunMode?: boolean;   // Phase M-3B: 主字段
+  browserDryRun?: boolean; // Phase M-3B: 兼容旧字段
 }
 
 /** POST /api/cloud/agent-integrated-task — 创建到派一体浏览器 DRY-RUN 任务 */
@@ -1204,7 +1207,8 @@ export interface CreateAgentSignParams {
   courierName?: string;
   waybills: string[];
   options?: { prevStation?: string; batchSize?: number };
-  browserDryRun?: boolean;
+  dryRunMode?: boolean;   // Phase M-3B: 主字段
+  browserDryRun?: boolean; // Phase M-3B: 兼容旧字段
 }
 
 /** POST /api/cloud/agent-sign-task — 创建签收录入浏览器 DRY-RUN 任务 */

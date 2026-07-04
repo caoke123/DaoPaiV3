@@ -30,10 +30,28 @@ import type { WaybillResult, TaskLogEntry } from '../types/api-contracts';
  *
  * 当前无 JWT 登录系统，所有数据归属 tenant-default。
  * 后续 Phase 2-C+ 接入认证后，由中间件从 JWT 解析 tenantId 注入。
+ *
+ * ⚠️ 风险说明（Phase M-3B）：
+ *  - 当前 28+ 处查询使用此值作为默认参数。
+ *  - DEFAULT 仅在方法签名参数中兜底使用，未在任何业务逻辑中直接引用字符串。
+ *  - 仅用于当前单租户开发环境，真实多租户上线前必须：
+ *    1. 移除所有 DEFAULT 兜底
+ *    2. 由请求上下文（JWT/Agent Token）强制注入 tenantId
+ *    3. 不传 tenantId 直接报错（400/403），杜绝静默跨租户数据泄露
  */
 export const DEFAULT_TENANT_ID = 'tenant-default';
 
-/** Phase 2-D: 默认本机工作站 ID（Agent 未拆分前统一使用） */
+/**
+ * 默认工作站 ID（Phase 2-D）
+ *
+ * 当前 Agent 未拆分前统一使用此值。
+ *
+ * ⚠️ 风险说明（Phase M-3B）：
+ *  - 仅用于当前开发环境，多工作站上线前必须：
+ *    1. 由 Agent 注册信息/Agent Token 中注入 workstationId
+ *    2. Agent pull 时必须按 workstationId 拉取
+ *    3. 不传 workstationId 直接拒绝
+ */
 export const DEFAULT_WORKSTATION_ID = 'ws-local-default';
 
 // ── 连接配置 ──────────────────────────────────────────

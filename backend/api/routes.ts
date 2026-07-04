@@ -1019,8 +1019,8 @@ router.post('/api/operations/arrive', async (req: Request, res: Response) => {
   // Phase 2-C: PG 主写 — 预生成 UUID，先写 PG（PRIMARY），失败直接 500
   const taskId = randomUUID();
   const inputData = finalAssignments.length > 0
-    ? { assignments, browserDryRun: dryRunMode === true, dryRun: dryRunMode === true }
-    : { waybillNos, browserDryRun: dryRunMode === true, dryRun: dryRunMode === true };
+    ? { assignments, dryRunMode: dryRunMode === true, browserDryRun: dryRunMode === true, dryRun: dryRunMode === true }
+    : { waybillNos, dryRunMode: dryRunMode === true, browserDryRun: dryRunMode === true, dryRun: dryRunMode === true };
   try {
     await pg.insertTask({
       id: taskId,
@@ -1142,7 +1142,7 @@ router.post('/api/operations/dispatch', async (req: Request, res: Response) => {
 
   // Phase 2-C: PG 主写 — 预生成 UUID，先写 PG（PRIMARY），失败直接 500
   const taskId = randomUUID();
-  const inputData = { executionMode, assignments, browserDryRun: dryRunMode === true, dryRun: dryRunMode === true };
+  const inputData = { executionMode, assignments, dryRunMode: dryRunMode === true, browserDryRun: dryRunMode === true, dryRun: dryRunMode === true };
   try {
     await pg.insertTask({
       id: taskId,
@@ -1268,7 +1268,7 @@ router.post('/api/operations/integrated', async (req: Request, res: Response) =>
 
   // Phase 2-C: PG 主写 — 预生成 UUID，先写 PG（PRIMARY），失败直接 500
   const taskId = randomUUID();
-  const inputData = { executionMode, assignments, browserDryRun: dryRunMode === true, dryRun: dryRunMode === true };
+  const inputData = { executionMode, assignments, dryRunMode: dryRunMode === true, browserDryRun: dryRunMode === true, dryRun: dryRunMode === true };
   try {
     await pg.insertTask({
       id: taskId,
@@ -1392,7 +1392,7 @@ router.post('/api/operations/sign', async (req: Request, res: Response) => {
 
   // Phase 2-C: PG 主写 — 预生成 UUID，先写 PG（PRIMARY），失败直接 500
   const taskId = randomUUID();
-  const inputData = { executionMode, assignments, browserDryRun: dryRunMode === true, dryRun: dryRunMode === true };
+  const inputData = { executionMode, assignments, dryRunMode: dryRunMode === true, browserDryRun: dryRunMode === true, dryRun: dryRunMode === true };
   try {
     await pg.insertTask({
       id: taskId,
@@ -2237,13 +2237,14 @@ router.post('/api/cloud/agent-arrival-task', async (req: Request, res: Response)
         waybills,
         options: options || {},
         siteName: siteName || siteId,
+        dryRunMode: resolvedDryRun,
         dryRun: resolvedDryRun,
         browserDryRun: resolvedDryRun,
       },
       tenantId,
     });
 
-    res.json({ ok: true, taskId, message: 'Arrival DRY-RUN 任务已创建', waybillCount: waybills.length, browserDryRun: resolvedDryRun });
+    res.json({ ok: true, taskId, message: 'Arrival DRY-RUN 任务已创建', waybillCount: waybills.length, dryRunMode: resolvedDryRun });
   } catch (e) {
     console.error('[POST /api/cloud/agent-arrival-task] 失败:', (e as Error).message);
     res.status(500).json({ error: (e as Error).message });
@@ -2278,13 +2279,14 @@ router.post('/api/cloud/agent-dispatch-task', async (req: Request, res: Response
         waybills,
         options: mergedOptions,
         siteName: siteName || siteId,
+        dryRunMode: resolvedDryRun,
         dryRun: resolvedDryRun,
         browserDryRun: resolvedDryRun,
       },
       tenantId,
     });
 
-    res.json({ ok: true, taskId, message: 'Dispatch DRY-RUN 任务已创建', waybillCount: waybills.length, browserDryRun: resolvedDryRun });
+    res.json({ ok: true, taskId, message: 'Dispatch DRY-RUN 任务已创建', waybillCount: waybills.length, dryRunMode: resolvedDryRun });
   } catch (e) {
     console.error('[POST /api/cloud/agent-dispatch-task] 失败:', (e as Error).message);
     res.status(500).json({ error: (e as Error).message });
@@ -2324,13 +2326,14 @@ router.post('/api/cloud/agent-integrated-task', async (req: Request, res: Respon
         waybills,
         options: mergedOptions,
         siteName: siteName || siteId,
+        dryRunMode: resolvedDryRun,
         dryRun: resolvedDryRun,
         browserDryRun: resolvedDryRun,
       },
       tenantId,
     });
 
-    res.json({ ok: true, taskId, message: 'Integrated DRY-RUN 任务已创建', waybillCount: waybills.length, browserDryRun: resolvedDryRun });
+    res.json({ ok: true, taskId, message: 'Integrated DRY-RUN 任务已创建', waybillCount: waybills.length, dryRunMode: resolvedDryRun });
   } catch (e) {
     console.error('[POST /api/cloud/agent-integrated-task] 失败:', (e as Error).message);
     res.status(500).json({ error: (e as Error).message });
@@ -2365,13 +2368,14 @@ router.post('/api/cloud/agent-sign-task', async (req: Request, res: Response) =>
         waybills,
         options: mergedOptions,
         siteName: siteName || siteId,
+        dryRunMode: resolvedDryRun,
         dryRun: resolvedDryRun,
         browserDryRun: resolvedDryRun,
       },
       tenantId,
     });
 
-    res.json({ ok: true, taskId, message: 'Sign DRY-RUN 任务已创建', waybillCount: waybills.length, browserDryRun: resolvedDryRun });
+    res.json({ ok: true, taskId, message: 'Sign DRY-RUN 任务已创建', waybillCount: waybills.length, dryRunMode: resolvedDryRun });
   } catch (e) {
     console.error('[POST /api/cloud/agent-sign-task] 失败:', (e as Error).message);
     res.status(500).json({ error: (e as Error).message });

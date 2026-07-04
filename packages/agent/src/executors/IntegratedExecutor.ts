@@ -644,7 +644,8 @@ export async function executeIntegratedDryRun(
   config?: AgentConfig,
 ): Promise<void> {
   const { taskId, siteId, payload } = task;
-  const browserDryRun = payload.browserDryRun ?? payload.dryRunMode ?? payload.dryRun ?? true;
+  // Phase M-3B: dryRunMode 为主字段，browserDryRun/dryRun 仅兼容
+  const browserDryRun = payload.dryRunMode ?? payload.browserDryRun ?? payload.dryRun ?? true;
   const siteName = payload.siteName || await settingsLoader.getSiteName(siteId);
   const prevStation = firstString(payload.prevStation, optionString(payload.options, 'prevStation'), '天津分拨中心');
   const assignments = parseIntegratedAssignments(payload);

@@ -294,12 +294,12 @@ export class SettingsManager {
   }
 
   /**
-   * Phase 5-I-1: 统一解析任务级 dryRun
+   * Phase M-3B: 统一解析任务级 dryRun
    *
-   * 优先级：
-   *   1. inputData.browserDryRun（任务级，前端传入，routes 层写入）
-   *   2. inputData.dryRunMode（兼容字段，前端原始字段名）
-   *   3. inputData.dryRun（兼容字段）
+   * 优先级（与 Agent Executor 保持一致）：
+   *   1. inputData.dryRunMode（Phase M-3B 主字段）
+   *   2. inputData.browserDryRun（兼容旧字段）
+   *   3. inputData.dryRun（兼容旧字段）
    *   4. SettingsManager.getDryRunMode()（全局兜底）
    *
    * 返回 browserDryRun boolean 和来源标识
@@ -307,16 +307,19 @@ export class SettingsManager {
   static async resolveTaskDryRun(inputData: unknown): Promise<{ browserDryRun: boolean; source: string }> {
     const data = inputData as Record<string, unknown> | null | undefined;
 
-    if (data && typeof data.browserDryRun === 'boolean') {
-      return { browserDryRun: data.browserDryRun, source: 'task.inputData.browserDryRun' };
-    }
-
+    // Phase M-3B: dryRunMode 优先
     if (data && typeof data.dryRunMode === 'boolean') {
       return { browserDryRun: data.dryRunMode, source: 'task.inputData.dryRunMode' };
     }
 
+    // 兼容旧字段 browserDryRun
+    if (data && typeof data.browserDryRun === 'boolean') {
+      return { browserDryRun: data.browserDryRun, source: 'task.inputData.browserDryRun (compat)' };
+    }
+
+    // 兼容旧字段 dryRun
     if (data && typeof data.dryRun === 'boolean') {
-      return { browserDryRun: data.dryRun, source: 'task.inputData.dryRun' };
+      return { browserDryRun: data.dryRun, source: 'task.inputData.dryRun (compat)' };
     }
 
     // 全局兜底
