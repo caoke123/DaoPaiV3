@@ -48,18 +48,6 @@ export const MOCK_BRANCH: MockBranch = {
   code: 'TJ-ND-01',
 };
 
-export interface MockEasyBRStatus {
-  total: number;
-  connected: number;
-  status: 'healthy' | 'degraded' | 'down';
-}
-
-export const MOCK_EASYBR: MockEasyBRStatus = {
-  total: 4,
-  connected: 4,
-  status: 'healthy',
-};
-
 export interface MockOperatorStatus {
   status: 'idle' | 'running' | 'error';
   label: string;
@@ -276,10 +264,10 @@ export interface DispatchOperator {
 }
 
 export const MOCK_DISPATCH_OPERATORS: DispatchOperator[] = [
-  { id: 'OP01', name: '张三', window: 'EasyBR窗口1', totalAssigned: 138, assignedBarcodes: [], completed: 0, success: 0, failed: 0, status: 'waiting' },
-  { id: 'OP02', name: '李四', window: 'EasyBR窗口2', totalAssigned: 126, assignedBarcodes: [], completed: 0, success: 0, failed: 0, status: 'waiting' },
-  { id: 'OP03', name: '王五', window: 'EasyBR窗口3', totalAssigned: 134, assignedBarcodes: [], completed: 0, success: 0, failed: 0, status: 'waiting' },
-  { id: 'OP04', name: '赵六', window: 'EasyBR窗口4', totalAssigned: 132, assignedBarcodes: [], completed: 0, success: 0, failed: 0, status: 'waiting' },
+  { id: 'OP01', name: '张三', window: '窗口1', totalAssigned: 138, assignedBarcodes: [], completed: 0, success: 0, failed: 0, status: 'waiting' },
+  { id: 'OP02', name: '李四', window: '窗口2', totalAssigned: 126, assignedBarcodes: [], completed: 0, success: 0, failed: 0, status: 'waiting' },
+  { id: 'OP03', name: '王五', window: '窗口3', totalAssigned: 134, assignedBarcodes: [], completed: 0, success: 0, failed: 0, status: 'waiting' },
+  { id: 'OP04', name: '赵六', window: '窗口4', totalAssigned: 132, assignedBarcodes: [], completed: 0, success: 0, failed: 0, status: 'waiting' },
 ];
 
 export function getDispatchStats() {

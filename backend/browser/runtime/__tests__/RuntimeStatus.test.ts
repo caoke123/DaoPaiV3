@@ -38,28 +38,25 @@ describe('RuntimeStatus', () => {
     const state = rs.getState();
     expect(state.health).toBe('available');
     expect(state.error).toBeNull();
-    expect(state.easybrConnected).toBe(true);
     expect(state.lastCheckedAt).toBeGreaterThan(0);
     expect(rs.isAvailable()).toBe(true);
   });
 
   it('markUnavailable 设置状态为 unavailable 并记录错误', () => {
-    rs.markUnavailable('EasyBR 连接失败: ECONNREFUSED');
+    rs.markUnavailable('连接失败');
     const state = rs.getState();
     expect(state.health).toBe('unavailable');
-    expect(state.error).toBe('EasyBR 连接失败: ECONNREFUSED');
-    expect(state.easybrConnected).toBe(false);
+    expect(state.error).toBe('连接失败');
     expect(state.lastCheckedAt).toBeGreaterThan(0);
     expect(rs.isAvailable()).toBe(false);
   });
 
-  it('markDegraded 设置状态为 degraded 并保留 easybrConnected', () => {
+  it('markDegraded 设置状态为 degraded', () => {
     rs.markAvailable();
     rs.markDegraded('部分窗口离线');
     const state = rs.getState();
     expect(state.health).toBe('degraded');
     expect(state.error).toBe('部分窗口离线');
-    expect(state.easybrConnected).toBe(true);
     expect(rs.isAvailable()).toBe(false);
   });
 
@@ -84,7 +81,6 @@ describe('RuntimeStatus', () => {
     expect(summary).toHaveProperty('runtime');
     expect(summary).toHaveProperty('runtimeError');
     expect(summary).toHaveProperty('runtimeLastCheckedAt');
-    expect(summary).toHaveProperty('easybrConnected');
     expect(summary.runtime).toBe('available');
     expect(summary.runtimeError).toBeNull();
   });
@@ -94,7 +90,6 @@ describe('RuntimeStatus', () => {
     const summary = rs.getSummary();
     expect(summary.runtime).toBe('unavailable');
     expect(summary.runtimeError).toBe('连接超时');
-    expect(summary.easybrConnected).toBe(false);
   });
 
   it('runtimeStatus 导出的实例可用', () => {
@@ -111,7 +106,7 @@ describe('requireRuntimeAvailable 行为验证', () => {
       const state = runtimeStatus.getState();
       res.status(503).json({
         error: 'BROWSER_RUNTIME_UNAVAILABLE',
-        message: '本地浏览器运行时不可用，请检查 EasyBR 是否已启动',
+        message: '本地浏览器运行时不可用',
         runtime: state.health,
         runtimeError: state.error,
       });
@@ -134,16 +129,16 @@ describe('requireRuntimeAvailable 行为验证', () => {
   });
 
   it('runtime unavailable 时返回 false，返回 503 JSON', () => {
-    runtimeStatus.markUnavailable('EasyBR 未启动');
+    runtimeStatus.markUnavailable('运行时未启动');
     const res = createMockRes();
     const result = simulateRequireRuntimeAvailable(res);
     expect(result).toBe(false);
     expect(res.status).toHaveBeenCalledWith(503);
     expect(res.json).toHaveBeenCalledWith({
       error: 'BROWSER_RUNTIME_UNAVAILABLE',
-      message: '本地浏览器运行时不可用，请检查 EasyBR 是否已启动',
+      message: '本地浏览器运行时不可用',
       runtime: 'unavailable',
-      runtimeError: 'EasyBR 未启动',
+      runtimeError: '运行时未启动',
     });
   });
 

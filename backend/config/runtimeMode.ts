@@ -1,32 +1,37 @@
 /**
- * Window Runtime Mode — Phase 2-D / Phase 2-E 模式开关
+ * Window Runtime Mode — Phase D-0B: EasyBR legacy removed
  *
- * 控制 AssignmentEngine 在获取窗口连接时走 legacy EasyBR 路径还是 Playwright Adapter 路径。
- *
- * 设计原则：
- *   1. 默认值必须是 legacy_easybr（生产零影响）
- *   2. 未设置或非法值一律回退 legacy_easybr
- *   3. Phase 2-D：playwright 模式下仅 sign 走 Adapter
- *   4. Phase 2-E：playwright 模式下扩展到 arrival/dispatch/integrated 走 Adapter
- *   5. POC API（/api/window-adapter-poc）不受该 mode 影响
- *   6. 模式判断集中在本文件，不散落到多个 Handler
+ * Deploy-0B: EasyBR 生产路径已完全断开，默认模式为 playwright。
+ * 旧值 legacy_easybr / easybr 归一为 playwright 并打印 warn。
  *
  * 配置方式：
- *   env WINDOW_RUNTIME_MODE=legacy_easybr  （默认）
- *   env WINDOW_RUNTIME_MODE=playwright
+ *   env WINDOW_RUNTIME_MODE=playwright  （默认）
  */
 export type WindowRuntimeMode = 'legacy_easybr' | 'playwright';
+
+let cachedMode: WindowRuntimeMode | null = null;
 
 /**
  * 读取当前 runtime mode
  *
- * - 严格匹配 'playwright'，其他任何值（包括未设置）都回退 legacy_easybr
- * - 读取一次后缓存，避免重复解析 env
+ * - 默认 playwright
+ * - 旧值 legacy_easybr / easybr 归一为 playwright 并打印 warn
  */
 export function getRuntimeMode(): WindowRuntimeMode {
-  const raw = process.env.WINDOW_RUNTIME_MODE;
-  if (raw === 'playwright') return 'playwright';
-  return 'legacy_easybr';
+  if (cachedMode) return cachedMode;
+  const raw = process.env.WINDOW_RUNTIME_MODE?.toLowerCase();
+  if (!raw || raw === 'playwright') {
+    cachedMode = 'playwright';
+    return 'playwright';
+  }
+  if (raw === 'legacy_easybr' || raw === 'easybr') {
+    console.warn('[runtimeMode] WARNING: legacy_easybr/easybr mode detected, normalized to playwright. EasyBR has been removed in DaoPai V3.');
+    cachedMode = 'playwright';
+    return 'playwright';
+  }
+  console.warn(`[runtimeMode] WARNING: unknown mode "${raw}", falling back to playwright.`);
+  cachedMode = 'playwright';
+  return 'playwright';
 }
 
 /**
@@ -66,7 +71,7 @@ const PLAYWRIGHT_ALLOWED_TASK_TYPES = new Set([
  *   - playwright 模式 + taskType∈{sign, arrival, dispatch, integrated} → 走 Adapter
  *   - 其他所有情况（含 legacy 模式 / 未在 allowlist 内的 taskType）→ 走 legacy BrowserPool
  *
- * 默认模式仍为 legacy_easybr，playwright 不会成为默认。
+ * D-0B: 默认模式改为 playwright，legacy_easybr 仅保留向后兼容类型。
  */
 export function shouldUsePlaywrightAdapter(taskType: string): boolean {
   return isPlaywrightMode() && PLAYWRIGHT_ALLOWED_TASK_TYPES.has(taskType);

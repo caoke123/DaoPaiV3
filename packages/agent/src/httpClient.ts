@@ -184,3 +184,40 @@ export async function queryWindowConnections(
   const res = await client.get('/agent/window-connections', { params, timeout: 10_000 });
   return res.data.data;
 }
+
+// ══════════════════════════════════════════════════════════
+// Phase Deploy-0C: Agent 窗口状态上报
+// ══════════════════════════════════════════════════════════
+
+/**
+ * POST /agent/windows/status — Agent 上报本机窗口状态
+ *
+ * 将窗口状态数组上报到 Cloud，upsert 到 PostgreSQL。
+ * 失败时只打印 warn，不影响任务执行。
+ */
+export async function reportWindowStatus(
+  client: AxiosInstance,
+  siteWindows: Array<{
+    siteId: string;
+    windowId: string;
+    staffName: string;
+    status: string;
+    statusText: string;
+    currentUrl?: string;
+    isProcessAlive: boolean;
+    isCdpReady: boolean;
+    isDashboardReady: boolean;
+    isLoginPage: boolean;
+    lastError?: string | null;
+    cdpEndpoint?: string | null;
+    profilePath?: string | null;
+    chromePid?: number | null;
+  }>,
+): Promise<void> {
+  try {
+    await client.post('/agent/windows/status', { siteWindows }, { timeout: 10_000 });
+  } catch (err) {
+    // 状态上报失败不影响业务
+    console.warn('[Agent] 窗口状态上报失败（非致命）:', (err as Error).message);
+  }
+}

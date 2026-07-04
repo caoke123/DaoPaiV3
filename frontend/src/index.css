@@ -353,7 +353,7 @@
   /* ─────────────────────────────────
      窗口在线标签 .window-pill — 状态监视标准：
 
-     🔴 offline   (灰·静态边框·半透明) — EasyBR 未打开该窗口
+     🔴 offline   (灰·静态边框·半透明) — 本地浏览器未打开该窗口
         → 判定: connections 中无此 windowId
 
      🔵 connecting (蓝·走马灯边框) — 正在连接/初始化中
@@ -362,7 +362,7 @@
      🟡 login_required (黄·静态边框) — 需要登录
         → 判定: loginRequiredWindows 有
 
-     🔵 connected (蓝·走马灯边框) — EasyBR 窗口已打开，但 P0 验证未通过
+     🔵 connected (蓝·走马灯边框) — 本地浏览器窗口已打开，但 P0 验证未通过
         → 判定: connections 有 但 p0Verified 无 且 loginRequired 无
 
      🟢 ready     (绿·静态边框) — P0 验证通过（登录✔ 弹窗✔ 首页DOM✔），随时可执行任务

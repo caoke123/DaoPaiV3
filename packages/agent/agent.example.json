@@ -8,8 +8,8 @@
   "workstationName": "天南大-前台电脑01",
   "settingsPath": "../../data/settings.json",
   "browser": {
-    "executablePath": "E:/网站开发/DaoPaiV3/Chrome/App/chrome.exe",
-    "userDataDir": "E:/网站开发/DaoPaiV3/runtime/chrome-profile",
+    "executablePath": "chrome/chrome.exe",
+    "userDataDir": "profiles/default",
     "debugPort": 9223,
     "headless": false
   },

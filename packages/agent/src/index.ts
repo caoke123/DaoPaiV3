@@ -19,6 +19,8 @@ import {
   uploadLogs,
   completeTask,
   failTask,
+  queryWindowConnections,
+  reportWindowStatus,
 } from './httpClient';
 import { AgentSettingsLoader } from './AgentSettingsLoader';
 import { executeArrivalDryRun } from './executors/ArrivalExecutor';
@@ -344,12 +346,72 @@ async function main(): Promise<void> {
   // 定时循环
   const timer = setInterval(() => tick(), config.heartbeatIntervalMs);
 
+  // ══════════════════════════════════════════════════════════
+  // Deploy-0C: 窗口状态独立上报循环（5s 间隔，不阻塞任务）
+  //
+  // 过渡实现：调用 Cloud 的 /agent/window-connections 获取当前窗口信息，
+  //           整理后上报到 /agent/windows/status。
+  // Deploy-0D 后应改为 Local Runtime 对本机 Portable Chrome 的真实检测。
+  // ══════════════════════════════════════════════════════════
+
+  const REPORT_INTERVAL_MS = 5000;
+
+  const reportWindowStatusLoop = async () => {
+    try {
+      // Transition: collect window info from Cloud PlaywrightRuntime
+      const connData = await queryWindowConnections(client, {}).catch(() => null);
+      if (!connData || !connData.windows.length) return;
+
+      const siteWindows = connData.windows.map(w => ({
+        siteId: w.siteId,
+        windowId: w.windowId,
+        staffName: w.staffName || w.windowId,
+        status: (() => {
+          // If currently executing a task, mark busy for active window if we can identify it
+          if (runningTaskId && w.status === 'busy') return 'busy';
+          if (w.status === 'ready') return 'ready';
+          if (w.status === 'login_required') return 'login_required';
+          if (w.status === 'connecting' || w.status === 'connected') return 'starting';
+          return 'offline';
+        })(),
+        statusText: (() => {
+          if (w.status === 'busy') return '工作中';
+          if (w.status === 'ready') return '就绪';
+          if (w.status === 'login_required') return '待登录';
+          if (w.status === 'connecting') return '启动中';
+          if (w.status === 'connected') return '连接中';
+          return '离线';
+        })(),
+        currentUrl: w.currentUrl || undefined,
+        isProcessAlive: w.status !== 'offline',
+        isCdpReady: !!(w.cdpEndpoint || w.cdpPort),
+        isDashboardReady: w.status === 'ready',
+        isLoginPage: w.status === 'login_required',
+        lastError: null,
+        cdpEndpoint: w.cdpEndpoint,
+        chromePid: null,
+      }));
+
+      await reportWindowStatus(client, siteWindows);
+    } catch {
+      // 静默失败，不影响业务
+    }
+  };
+
+  // 立即执行第一次上报
+  reportWindowStatusLoop().catch(() => {});
+
+  // 独立上报定时器
+  const reportTimer = setInterval(() => reportWindowStatusLoop(), REPORT_INTERVAL_MS);
+  console.log(`窗口状态上报已启动，每 ${REPORT_INTERVAL_MS / 1000} 秒上报`);
+
   // 优雅退出
   const shutdown = () => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log('\n正在停止本地执行端...');
     clearInterval(timer);
+    clearInterval(reportTimer);
     logger.info('本地执行端已停止');
     process.exit(0);
   };

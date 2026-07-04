@@ -9,7 +9,6 @@ import { randomUUID } from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import { BrowserPool } from '../browser/BrowserPool';
 import { Database, type Site, type TaskType } from '../db/Database';
-import { EasyBRClient } from '../easybr/EasyBRClient';
 import { taskLogManager } from '../utils/TaskLogManager';
 import { taskEventBus, type TaskEvent } from '../utils/TaskEventBus';
 import { RuntimeMetrics } from '../runtime/RuntimeMetrics';
@@ -24,7 +23,7 @@ import { taskLogService } from '../services/TaskLogService';
 // Phase K-R1: scheduleLocalEngineRun 已删除，TaskEngineRunner / isPlaywrightMode 不再被 routes.ts 使用
 import { AssignmentEngine, InitWindowHandler, type Assignment } from '../modules/assignment-engine';
 
-// ── 任务提交速率保护（保护 EasyBR 稳定性）────────────────
+// ── 任务提交速率保护（保护本地运行时稳定性）────────────────
 // 简单令牌桶：每秒最多 1 个任务提交请求
 // 超过速率返回 429 Too Many Requests，前端应提示用户稍后再试
 let lastTaskSubmitTime = 0;
@@ -195,58 +194,19 @@ router.get('/api/diag/connections', async (_req: Request, res: Response) => {
   }
 });
 
-/** POST /api/windows/:browerid/toggle — 切换窗口开关状态 */
-router.post('/api/windows/:browerid/toggle', async (req: Request, res: Response) => {
-  if (!requireRuntimeAvailable(res)) return;
-  const { browerid } = req.params;
-  if (!browerid) {
-    res.status(400).json({ error: '缺少 browerid 参数' });
-    return;
-  }
-  try {
-    const pool = BrowserPool.getInstance();
-    const result = await pool.toggleWindow(browerid);
-    res.json(result);
-  } catch (e) {
-    console.error(`[toggleWindow] ${browerid} 失败:`, (e as Error).message);
-    res.status(500).json({ error: (e as Error).message });
-  }
+/** POST /api/windows/:browerid/toggle — 【D-0B: EasyBR legacy 已移除，返回 410 Gone】 */
+router.post('/api/windows/:browerid/toggle', (_req: Request, res: Response) => {
+  res.status(410).json({ error: 'EasyBR legacy mode has been removed in DaoPai V3', code: 'EASYBR_GONE' });
 });
 
-/** POST /api/windows/:browerid/cleanup-pages — 清理多余标签页 */
-router.post('/api/windows/:browerid/cleanup-pages', async (req: Request, res: Response) => {
-  if (!requireRuntimeAvailable(res)) return;
-  const { browerid } = req.params;
-  if (!browerid) {
-    res.status(400).json({ error: '缺少 browerid 参数' });
-    return;
-  }
-  try {
-    const pool = BrowserPool.getInstance();
-    const result = await pool.cleanupWindowPages(browerid);
-    res.json(result);
-  } catch (e) {
-    console.error(`[cleanupWindowPages] ${browerid} 失败:`, (e as Error).message);
-    res.status(500).json({ error: (e as Error).message });
-  }
+/** POST /api/windows/:browerid/cleanup-pages — 【D-0B: EasyBR legacy 已移除，返回 410 Gone】 */
+router.post('/api/windows/:browerid/cleanup-pages', (_req: Request, res: Response) => {
+  res.status(410).json({ error: 'EasyBR legacy mode has been removed in DaoPai V3', code: 'EASYBR_GONE' });
 });
 
-/** POST /api/windows/:browerid/ensure-ready — P0 前置检查（任务前必须调用） */
-router.post('/api/windows/:browerid/ensure-ready', async (req: Request, res: Response) => {
-  if (!requireRuntimeAvailable(res)) return;
-  const { browerid } = req.params;
-  if (!browerid) {
-    res.status(400).json({ error: '缺少 browerid 参数' });
-    return;
-  }
-  try {
-    const pool = BrowserPool.getInstance();
-    await pool.ensureWindowReady(browerid);
-    res.json({ ready: true });
-  } catch (e) {
-    console.error(`[ensureWindowReady] ${browerid} 失败:`, (e as Error).message);
-    res.status(500).json({ error: (e as Error).message, ready: false });
-  }
+/** POST /api/windows/:browerid/ensure-ready — 【D-0B: EasyBR legacy 已移除，返回 410 Gone】 */
+router.post('/api/windows/:browerid/ensure-ready', (_req: Request, res: Response) => {
+  res.status(410).json({ error: 'EasyBR legacy mode has been removed in DaoPai V3', code: 'EASYBR_GONE' });
 });
 
 // ── 窗口初始化任务接口 ──────────────────────────────────
@@ -260,14 +220,8 @@ router.post('/api/windows/init', async (req: Request, res: Response) => {
       return res.status(400).json({ error: '缺少 site_id 或 window_id' });
     }
 
-    // ★ 启动前先行检测 EasyBR 健康状态
-    const ebCheck = EasyBRClient.getInstance();
-    const health = await ebCheck.checkHealth();
-    if (!health.ok) {
-      return res.status(503).json({ error: `本地浏览器运行时未就绪: ${health.message}。请先启动本地执行端` });
-    }
-
-    // 获取窗口信息（从数据库查找名称/员工）
+    // D-0B: EasyBR health check removed — V3 Playwright path handles window readiness
+    // Get window info from database (lookup name/employee)
     const db = Database.getInstance();
     const pg = PgDatabase.getInstance();
     const allWindows = db.listWindows();
@@ -411,396 +365,85 @@ router.get('/api/windows/status', async (_req: Request, res: Response) => {
 
 // ── 站点窗口 4 态 API（对齐设置中心配置）────────────────────
 
-/** GET /api/sites/:siteId/windows — 返回该网点在设置中心的窗口 × 4 态实时状态 */
-router.get('/api/sites/:siteId/windows', async (req: Request, res: Response) => {
+/** GET /api/sites/:siteId/windows — 【D-0B: EasyBR legacy 已移除，返回 410 Gone】
+ *  V3 请使用 GET /api/sites/:siteId/playwright-windows */
+router.get('/api/sites/:siteId/windows', (_req: Request, res: Response) => {
+  res.status(410).json({
+    error: 'EasyBR legacy mode has been removed in DaoPai V3',
+    code: 'EASYBR_GONE',
+    hint: 'Use GET /api/sites/:siteId/playwright-windows instead',
+  });
+});
+
+/** POST /api/sites/:siteId/windows/launch-all — 【D-0B: EasyBR legacy 已移除，返回 410 Gone】
+ *  V3 请使用 POST /api/sites/:siteId/playwright-windows/launch-all */
+router.post('/api/sites/:siteId/windows/launch-all', (_req: Request, res: Response) => {
+  res.status(410).json({
+    error: 'EasyBR legacy mode has been removed in DaoPai V3',
+    code: 'EASYBR_GONE',
+    hint: 'Use POST /api/sites/:siteId/playwright-windows/launch-all instead',
+  });
+});
+
+// ── D-0B: EasyBR legacy routes removed ─────────────────
+
+/** POST /api/easybr/open-browser — 【D-0B: EasyBR legacy 已移除，返回 410 Gone】 */
+router.post('/api/easybr/open-browser', (_req: Request, res: Response) => {
+  res.status(410).json({ error: 'EasyBR legacy mode has been removed in DaoPai V3', code: 'EASYBR_GONE' });
+});
+
+/** POST /api/easybr/reconnect — 【D-0B: EasyBR legacy 已移除，返回 410 Gone】 */
+router.post('/api/easybr/reconnect', (_req: Request, res: Response) => {
+  res.status(410).json({ error: 'EasyBR legacy mode has been removed in DaoPai V3', code: 'EASYBR_GONE' });
+});
+
+// ── Deploy-0C: Cloud 窗口状态查询接口 ─────────────────
+
+/** GET /api/cloud/windows/status — Header 查询持久化窗口状态
+ *  优先读取 Agent 上报的 window_status 表。
+ *  若 Agent 长时间未上报（>60s），标记 stale=true 并降级为 offline。
+ */
+router.get('/api/cloud/windows/status', async (req: Request, res: Response) => {
   try {
-    const { siteId } = req.params;
-    const sm = SettingsManager.getInstance();
-    const pool = BrowserPool.getInstance();
-    const config = await sm.getConfig();
-
-    if (!config.initialized) {
-      return res.json({ siteId, windows: [] });
+    const { siteId } = req.query;
+    if (!siteId || typeof siteId !== 'string') {
+      return res.status(400).json({ error: '缺少 siteId 查询参数' });
     }
 
-    const site = config.sites.find(s => s.id === siteId);
-    if (!site) {
-      return res.status(404).json({ error: `网点 ${siteId} 未配置` });
-    }
+    const pg = PgDatabase.getInstance();
+    const tenantId = getTenantId(req) || 'tenant-default';
 
-    // ★ 混合数据源：EasyBR 在线状态 + BrowserPool 连接/P0/busy 状态
-    // EasyBR openedList 告知哪些窗口已拉起（即使 CDP 未连也显示"已连接"而非灰色）
-    const eb = EasyBRClient.getInstance();
-    const [browserConfigs, openedWindows] = await Promise.all([
-      eb.getBrowerList().catch((e) => {
-        console.warn(`[routes] EasyBR getBrowerList 调用失败:`, typeof e === 'object' && 'message' in e ? (e as Error).message : String(e));
-        return new Map<string, string>();
-      }),
-      eb.openedList().catch((e) => {
-        console.warn(`[routes] EasyBR openedList 调用失败:`, typeof e === 'object' && 'message' in e ? (e as Error).message : String(e));
-        return [] as { browerid: string; isopen: boolean }[];
-      }),
-    ]);
-    const openIds = new Set(openedWindows.filter(w => w.isopen).map(w => w.browerid));
-    const nameToId = new Map<string, string>();
-    for (const [id, name] of browserConfigs) {
-      nameToId.set(name, id);
-    }
+    const rows = await pg.getWindowStatusBySite(tenantId, siteId);
 
-    // ★ Phase 4-C: 只返回可登录员工（有密码），无密码员工不参与窗口状态管理
-    const loginCapableWindows = site.windows.filter(isLoginCapableWindow);
+    const STALE_MS = 60_000; // 超过 60s 视为过期
+    const now = Date.now();
 
-    // ★ 运行时匹配缺失的 browserId（新添加的窗口没有 easybrBrowserId 时自动匹配）
-    // 匹配逻辑与 launch-all / syncBrowserIdsToSettings 保持一致
-    let configChanged = false;
-    const resolvedWindows = loginCapableWindows.map(w => {
-      let browserId = (w as any).easybrBrowserId || null;
-
-      if (!browserId) {
-        // 1) windowName 精确匹配
-        browserId = nameToId.get(w.windowName) || null;
-        // 2) siteName-employeeName 精确匹配（如 "天南大-张磊"）
-        if (!browserId && w.employeeName) {
-          browserId = nameToId.get(`${site.name}-${w.employeeName}`) || null;
-        }
-        // 3) employeeName 精确匹配
-        if (!browserId && w.employeeName) {
-          browserId = nameToId.get(w.employeeName) || null;
-        }
-        // 4) windowName 模糊匹配（includes）
-        if (!browserId) {
-          for (const [id, name] of browserConfigs) {
-            if (w.windowName.includes(name) || name.includes(w.windowName)) {
-              browserId = id;
-              break;
-            }
-          }
-        }
-        // 5) employeeName 模糊匹配
-        if (!browserId && w.employeeName) {
-          for (const [id, name] of browserConfigs) {
-            if (name.includes(w.employeeName)) {
-              browserId = id;
-              break;
-            }
-          }
-        }
-
-        // 匹配成功 → 回写到配置（持久化，下次无需再匹配）
-        if (browserId) {
-          (w as any).easybrBrowserId = browserId;
-          configChanged = true;
-          console.log(`[routes/getSiteWindows] 自动匹配 browserId: ${w.employeeName || w.windowName} → ${browserId.slice(0, 8)}`);
-        }
-      }
-
-      return { ...w, _resolvedBrowserId: browserId };
-    });
-
-    // 如果有新匹配到的 browserId，异步持久化到 settings.json
-    if (configChanged) {
-      sm.updateConfig(config.sites).catch((e: Error) => {
-        console.warn(`[routes/getSiteWindows] 回写 browserId 到配置失败:`, e.message);
-      });
-    }
-
-    const windows = resolvedWindows.map(w => {
-      const browserId = w._resolvedBrowserId;
-
-      // 5) 判定状态
-      let state: 'offline' | 'connecting' | 'login_required' | 'connected' | 'ready' | 'busy' | 'degraded';
-
-      // ★ 第 4 批 SSOT：从 BrowserPool 的聚合运行时状态直接读取，不再自行推导
-      if (browserId) {
-        const rt = pool.getRuntimeState(browserId);
-        state = rt.state;
-      } else {
-        state = 'offline';
-      }
-
-      const poolDegraded = browserId ? pool.isWindowDegraded(browserId) : false;
-
-      // ★ 诊断日志：打印 RuntimeState 详情
-      if (browserId) {
-        const rt = pool.getRuntimeState(browserId);
-        console.log(
-          `[routes] 状态判定: ${w.employeeName} | browserId=${browserId.slice(0, 8)} | ` +
-          `state=${rt.state} | connected=${rt.isConnected} | p0=${rt.isP0Verified} | loginRequired=${rt.isLoginRequired} | busy=${rt.isBusy} | connecting=${rt.isConnecting} | ` +
-          `degraded=${rt.isDegraded} | updatedAt=${rt.updatedAt}`,
-        );
-      } else {
-        console.log(
-          `[routes] 状态判定: ${w.employeeName} | browserId=null (未匹配到EasyBR浏览器) | → OFFLINE`,
-        );
-      }
-
+    const windows = rows.map(r => {
+      const updatedAt = r.updatedAt ? new Date(r.updatedAt).getTime() : 0;
+      const stale = (now - updatedAt) > STALE_MS;
       return {
-        windowName: w.windowName,
-        employeeName: w.employeeName,
-        browserId,
-        status: state,
-        isDegraded: poolDegraded,
-        degradedCount: browserId ? pool.getDegradedCount(browserId) : 0,
+        siteId: r.siteId,
+        workstationId: r.workstationId,
+        windowId: r.windowId,
+        staffName: r.staffName,
+        status: stale ? 'offline' : r.status,
+        statusText: stale ? '离线（状态过期）' : r.statusText,
+        currentUrl: r.currentUrl || undefined,
+        isProcessAlive: stale ? false : r.isProcessAlive,
+        isCdpReady: stale ? false : r.isCdpReady,
+        isDashboardReady: stale ? false : r.isDashboardReady,
+        isLoginPage: stale ? false : r.isLoginPage,
+        lastHeartbeatAt: r.lastHeartbeatAt,
+        updatedAt: r.updatedAt,
+        stale,
+        lastError: r.lastError || undefined,
       };
     });
 
-    // ★ 步骤6: 附带 easybrHealth 字段（包含熔断器状态、openedList 异常、重连提示）
-    const ebHealth = eb.getHealthStatus();
-    const easybrHealth = {
-      openedListAbnormal: ebHealth.openedListAbnormal,
-      anomalyDurationMs: ebHealth.openedListAbnormalDurationMs,
-      circuitBreakerOpen: ebHealth.circuitBreakerOpen,
-      circuitBreakerRemainingMs: ebHealth.circuitBreakerRemainingMs,
-      reconnectNeeded: ebHealth.reconnectNeeded,
-      message: ebHealth.message,
-    };
-
-    res.json({
-      siteId,
-      siteName: site.name,
-      windows,
-      easybrHealth,
-    });
+    res.json({ windows });
   } catch (e) {
-    console.error(`[GET /api/sites/${req.params.siteId}/windows] 失败:`, (e as Error).message);
+    console.error('[GET /api/cloud/windows/status] 失败:', (e as Error).message);
     res.status(500).json({ error: (e as Error).message });
-  }
-});
-
-/** POST /api/sites/:siteId/windows/launch-all — 一键启动该网点全部窗口 */
-router.post('/api/sites/:siteId/windows/launch-all', async (req: Request, res: Response) => {
-  if (!requireRuntimeAvailable(res)) return;
-  try {
-    const { siteId } = req.params;
-    const sm = SettingsManager.getInstance();
-    const pool = BrowserPool.getInstance();
-    const config = await sm.getConfig();
-
-    if (!config.initialized) {
-      return res.status(400).json({ error: '系统尚未完成 PIN 初始化' });
-    }
-
-    const site = config.sites.find(s => s.id === siteId);
-    if (!site) {
-      return res.status(404).json({ error: `网点 ${siteId} 未配置` });
-    }
-
-    const ebHealth = EasyBRClient.getInstance();
-    const health = await ebHealth.checkHealth();
-    if (!health.ok) {
-      return res.status(503).json({ error: `本地浏览器运行时未就绪: ${health.message}。请先启动本地执行端` });
-    }
-
-    const eb = EasyBRClient.getInstance();
-    const browserConfigs = await eb.getBrowerList().catch((e) => {
-      console.warn(`[routes/launch-all] EasyBR getBrowerList 调用失败:`, typeof e === 'object' && 'message' in e ? (e as Error).message : String(e));
-      return new Map<string, string>();
-    });
-    const nameToId = new Map<string, string>();
-    for (const [id, name] of browserConfigs) {
-      nameToId.set(name, id);
-    }
-
-    // ★ Phase 4-C: 只启动可登录员工（有密码），无密码员工不能作为执行窗口
-    const loginCapableWindows = site.windows.filter(isLoginCapableWindow);
-    const totalWindows = site.windows.length;
-    const skippedNoPassword = site.windows.length - loginCapableWindows.length;
-    if (skippedNoPassword > 0) {
-      console.log(`[launch-all] 跳过 ${skippedNoPassword} 个无密码员工（仅目标派件员）`);
-    }
-    const toLaunch: { windowName: string; employeeName: string; browserId: string }[] = [];
-    for (const w of loginCapableWindows) {
-      let browserId = (w as any).easybrBrowserId || null;
-      if (!browserId) {
-        browserId = nameToId.get(w.windowName) || null;
-      }
-      if (!browserId) {
-        for (const [id, name] of browserConfigs) {
-          if (w.windowName.includes(name) || name.includes(w.windowName)) { browserId = id; break; }
-        }
-      }
-      if (!browserId && w.employeeName) {
-        for (const [id, name] of browserConfigs) {
-          if (name.includes(w.employeeName)) { browserId = id; break; }
-        }
-      }
-      if (!browserId) {
-        console.warn(`[launch-all] 窗口 ${w.windowName}(${w.employeeName}) 未匹配到 EasyBR browserId，跳过`);
-        continue;
-      }
-      toLaunch.push({ windowName: w.windowName, employeeName: w.employeeName, browserId });
-    }
-
-    if (toLaunch.length === 0) {
-      return res.json({
-        launched: 0, failed: 0, total: totalWindows, partial: 0,
-        timeout: false, success: true,
-        message: '所有窗口已就绪',
-        windows: [],
-      });
-    }
-
-    const timeoutMs = Math.min(15000 + Math.ceil(toLaunch.length / 2) * 25000, 120000);
-    const startTime = Date.now();
-
-    console.log(`[launch-all] start siteId=${siteId} total=${totalWindows} toLaunch=${toLaunch.length} timeoutMs=${timeoutMs}`);
-
-    let completedCount = 0;
-    const timeoutSymbol = Symbol('timeout');
-    const partialResults: Array<{ windowName: string; staffName: string; browserId: string; status: string; ready: boolean; message?: string } | null> = toLaunch.map(() => null);
-    const launchPromises = toLaunch.map(async (w, idx) => {
-      const staffLabel = w.employeeName || w.windowName;
-      console.log(`[launch-all] ensureWindowOpen start browserId=${w.browserId.slice(0, 8)}... staffName=${staffLabel}`);
-      try {
-        const result = await pool.ensureWindowOpen(w.browserId);
-        completedCount++;
-        console.log(`[launch-all] result staffName=${staffLabel} browserId=${w.browserId.slice(0, 8)}... status=${result.status} ready=${result.ready} message=${result.message || ''}`);
-        let responseStatus: string;
-        if (result.ready) {
-          responseStatus = result.status === 'already_ready' ? 'already_ready' : 'ready';
-        } else if (result.status === 'login_required') {
-          responseStatus = 'login_required';
-        } else if (result.status === 'not_ready' || result.status === 'connected') {
-          responseStatus = 'not_ready';
-        } else {
-          responseStatus = 'failed';
-        }
-        const r = {
-          windowName: w.windowName,
-          staffName: staffLabel,
-          browserId: w.browserId,
-          status: responseStatus,
-          ready: result.ready,
-          message: result.message,
-        };
-        partialResults[idx] = r;
-        return r;
-      } catch (e) {
-        completedCount++;
-        const errMsg = (e as Error).message;
-        console.error(`[launch-all] failed staffName=${staffLabel} browserId=${w.browserId.slice(0, 8)}... error=${errMsg}`);
-        const r = { windowName: w.windowName, staffName: staffLabel, browserId: w.browserId, status: 'failed' as const, ready: false, message: errMsg };
-        partialResults[idx] = r;
-        return r;
-      }
-    });
-
-    const withTimeout = await Promise.race([
-      Promise.allSettled(launchPromises),
-      new Promise<typeof timeoutSymbol>(resolve => setTimeout(() => resolve(timeoutSymbol), timeoutMs)),
-    ]);
-
-    if (withTimeout === timeoutSymbol) {
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
-      let timedOutReady = 0;
-      let timedOutPartial = 0;
-      let timedOutFailed = 0;
-      const timedOutWindows = toLaunch.map((w, idx) => {
-        const done = partialResults[idx];
-        if (done) {
-          if (done.status === 'ready' || done.status === 'already_ready') { timedOutReady++; }
-          else if (done.status === 'failed') { timedOutFailed++; }
-          else { timedOutPartial++; }
-          return done;
-        }
-        timedOutPartial++;
-        return {
-          windowName: w.windowName, staffName: w.employeeName || w.windowName,
-          browserId: w.browserId, status: 'launching', ready: false, message: '启动中，请稍后刷新',
-        };
-      });
-      console.warn(`[launch-all] timeout siteId=${siteId} total=${toLaunch.length} completed=${completedCount} ready=${timedOutReady} failed=${timedOutFailed} timeoutMs=${timeoutMs} message=窗口仍在后台启动中`);
-      return res.json({
-        launched: timedOutReady, failed: timedOutFailed, total: totalWindows, partial: timedOutPartial,
-        timeout: true, success: false,
-        message: '窗口仍在后台启动中，请稍后查看状态',
-        windows: timedOutWindows,
-      });
-    }
-
-    const results = withTimeout as PromiseSettledResult<{ windowName: string; staffName: string; browserId: string; status: string; ready: boolean; message?: string }>[];
-    let readyCount = 0;
-    let failedCount = 0;
-    let partialCount = 0;
-    const windowsResult = results.map(r => {
-      if (r.status === 'rejected') {
-        failedCount++;
-        return { windowName: '', staffName: '', browserId: '', status: 'failed' as const, ready: false, message: r.reason?.message || '未知错误' };
-      }
-      const v = r.value;
-      if (v.status === 'ready' || v.status === 'already_ready') {
-        readyCount++;
-      } else if (v.status === 'failed') {
-        failedCount++;
-      } else {
-        partialCount++;
-      }
-      return v;
-    });
-
-    const success = failedCount === 0 && readyCount > 0;
-    let message: string;
-    if (failedCount === 0 && partialCount === 0) {
-      message = `窗口启动完成，${readyCount} 个窗口已就绪`;
-    } else if (failedCount === 0) {
-      message = `${readyCount} 个窗口已就绪，${partialCount} 个窗口仍在连接或需要登录，请稍后查看状态`;
-    } else {
-      message = `${readyCount} 个窗口已就绪，${partialCount} 个连接中，${failedCount} 个失败，请查看窗口状态或后端日志`;
-    }
-
-    console.log(`[launch-all] done siteId=${siteId} ready=${readyCount} partial=${partialCount} failed=${failedCount} total=${toLaunch.length}`);
-
-    res.json({
-      launched: readyCount,
-      failed: failedCount,
-      total: totalWindows,
-      partial: partialCount,
-      timeout: false,
-      success,
-      message,
-      windows: windowsResult,
-    });
-  } catch (e) {
-    console.error(`[POST /api/sites/${req.params.siteId}/windows/launch-all] 失败:`, (e as Error).message);
-    res.status(500).json({ error: (e as Error).message });
-  }
-});
-
-// ── EasyBR 浏览器控制接口 ──────────────────────────────
-
-/** POST /api/easybr/open-browser — 直接调用 EasyBR 打开/聚焦指定浏览器窗口 */
-router.post('/api/easybr/open-browser', async (req: Request, res: Response) => {
-  if (!requireRuntimeAvailable(res)) return;
-  try {
-    const { browserId } = req.body as { browserId: string };
-    if (!browserId) {
-      return res.status(400).json({ error: '缺少 browserId 参数' });
-    }
-    const eb = EasyBRClient.getInstance();
-    // ★ 先检测 EasyBR 健康
-    const health = await eb.checkHealth();
-    if (!health.ok) {
-      return res.status(503).json({ error: `本地浏览器运行时未就绪: ${health.message}。请先启动本地执行端` });
-    }
-    const result = await eb.openBrower(browserId);
-    res.json({ ok: true, ws: result.ws, http: result.http });
-  } catch (e) {
-    console.error('[POST /api/easybr/open-browser] 失败:', (e as Error).message);
-    res.status(500).json({ error: (e as Error).message });
-  }
-});
-
-/** POST /api/easybr/reconnect — 手动重置 EasyBR 连接（用户重启 EasyBR 后调用，清除熔断器/缓存/异常状态） */
-router.post('/api/easybr/reconnect', async (_req: Request, res: Response) => {
-  try {
-    const eb = EasyBRClient.getInstance();
-    eb.resetConnection();
-    // 立即尝试一次健康检查验证连接
-    const health = await eb.checkHealth();
-    res.json({ ok: health.ok, message: health.message });
-  } catch (e) {
-    console.error('[POST /api/easybr/reconnect] 失败:', (e as Error).message);
-    res.status(500).json({ ok: false, error: (e as Error).message });
   }
 });
 
@@ -1001,7 +644,7 @@ router.post('/api/operations/arrive', async (req: Request, res: Response) => {
     }
   }
 
-  // ★ 速率保护：保护 EasyBR 稳定性，每秒最多 1 个任务
+  // ★ 速率保护：每秒最多 1 个任务
   const rate = checkTaskRate();
   if (!rate.allowed) {
     return res.status(429).json({ error: `请稍后再试 (${Math.ceil(rate.waitMs / 1000)}秒)`, retryAfter: Math.ceil(rate.waitMs / 1000) });
@@ -1130,7 +773,7 @@ router.post('/api/operations/dispatch', async (req: Request, res: Response) => {
 
   const totalCount = assignments.reduce((s, a) => s + a.waybillNos.length, 0);
 
-  // ★ 速率保护：保护 EasyBR 稳定性，每秒最多 1 个任务
+  // ★ 速率保护：每秒最多 1 个任务
   const rate = checkTaskRate();
   if (!rate.allowed) {
     return res.status(429).json({ error: `请稍后再试 (${Math.ceil(rate.waitMs / 1000)}秒)`, retryAfter: Math.ceil(rate.waitMs / 1000) });
@@ -1256,7 +899,7 @@ router.post('/api/operations/integrated', async (req: Request, res: Response) =>
 
   const totalCount = assignments.reduce((s, a) => s + a.waybillNos.length, 0);
 
-  // ★ 速率保护：保护 EasyBR 稳定性，每秒最多 1 个任务
+  // ★ 速率保护：每秒最多 1 个任务
   const rate = checkTaskRate();
   if (!rate.allowed) {
     return res.status(429).json({ error: `请稍后再试 (${Math.ceil(rate.waitMs / 1000)}秒)`, retryAfter: Math.ceil(rate.waitMs / 1000) });
@@ -1380,7 +1023,7 @@ router.post('/api/operations/sign', async (req: Request, res: Response) => {
   // Phase E-1: 签收为预览模式，每个员工 1 个占位运单（用于 Engine 进度统计）
   const totalCount = assignments.length;
 
-  // ★ 速率保护：保护 EasyBR 稳定性，每秒最多 1 个任务
+  // ★ 速率保护：每秒最多 1 个任务
   const rate = checkTaskRate();
   if (!rate.allowed) {
     return res.status(429).json({ error: `请稍后再试 (${Math.ceil(rate.waitMs / 1000)}秒)`, retryAfter: Math.ceil(rate.waitMs / 1000) });
@@ -1452,11 +1095,9 @@ router.get('/api/operations/stats', async (req: Request, res: Response) => {
   try {
     // Phase 3-D-2: BrowserPool 不可用时仍返回有效统计
     let onlineWindows = 0;
-    let easybrConnected = false;
     try {
       const bp = BrowserPool.getInstance();
       onlineWindows = bp.getConnectedCount();
-      easybrConnected = onlineWindows > 0;
     } catch (bpErr) {
       console.warn('[GET /api/operations/stats] BrowserPool 不可用:', (bpErr as Error).message);
     }
@@ -1514,7 +1155,6 @@ router.get('/api/operations/stats', async (req: Request, res: Response) => {
     res.json({
       tasks: stats,
       system: {
-        easybrConnected,
         onlineWindows,
         activeWorkers,
         runningTasks: stats.running,

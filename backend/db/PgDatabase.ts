@@ -2036,4 +2036,112 @@ export class PgDatabase {
     );
     return (result.rowCount ?? 0) > 0;
   }
+
+  // ══════════════════════════════════════════════════════════
+  // Phase Deploy-0C: Agent 窗口状态上报
+  // ══════════════════════════════════════════════════════════
+
+  /**
+   * Upsert Agent 上报的窗口状态
+   *
+   * 唯一键: (tenant_id, site_id, workstation_id, window_id)
+   * 冲突时更新全部字段
+   */
+  async upsertWindowStatus(params: {
+    tenantId: string;
+    siteId: string;
+    workstationId: string;
+    windowId: string;
+    staffName: string;
+    status: string;
+    statusText: string;
+    currentUrl?: string;
+    isProcessAlive: boolean;
+    isCdpReady: boolean;
+    isDashboardReady: boolean;
+    isLoginPage: boolean;
+    lastError?: string | null;
+    cdpEndpoint?: string | null;
+    profilePath?: string | null;
+    chromePid?: number | null;
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO window_status (
+        tenant_id, site_id, workstation_id, window_id, staff_name,
+        status, status_text, current_url, is_process_alive, is_cdp_ready,
+        is_dashboard_ready, is_login_page, last_error, cdp_endpoint,
+        profile_path, chrome_pid, last_heartbeat_at, updated_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW(),NOW())
+      ON CONFLICT (tenant_id, site_id, workstation_id, window_id)
+      DO UPDATE SET
+        staff_name = EXCLUDED.staff_name,
+        status = EXCLUDED.status,
+        status_text = EXCLUDED.status_text,
+        current_url = EXCLUDED.current_url,
+        is_process_alive = EXCLUDED.is_process_alive,
+        is_cdp_ready = EXCLUDED.is_cdp_ready,
+        is_dashboard_ready = EXCLUDED.is_dashboard_ready,
+        is_login_page = EXCLUDED.is_login_page,
+        last_error = EXCLUDED.last_error,
+        cdp_endpoint = EXCLUDED.cdp_endpoint,
+        profile_path = EXCLUDED.profile_path,
+        chrome_pid = EXCLUDED.chrome_pid,
+        last_heartbeat_at = NOW(),
+        updated_at = NOW()`,
+      [
+        params.tenantId, params.siteId, params.workstationId, params.windowId, params.staffName,
+        params.status, params.statusText, params.currentUrl || null, params.isProcessAlive, params.isCdpReady,
+        params.isDashboardReady, params.isLoginPage, params.lastError || null, params.cdpEndpoint || null,
+        params.profilePath || null, params.chromePid || null,
+      ]
+    );
+  }
+
+  /**
+   * 按 tenantId + siteId 查询窗口状态列表
+   */
+  async getWindowStatusBySite(tenantId: string, siteId: string): Promise<Array<{
+    siteId: string;
+    workstationId: string;
+    windowId: string;
+    staffName: string;
+    status: string;
+    statusText: string;
+    currentUrl: string | null;
+    isProcessAlive: boolean;
+    isCdpReady: boolean;
+    isDashboardReady: boolean;
+    isLoginPage: boolean;
+    lastHeartbeatAt: string;
+    updatedAt: string;
+    lastError: string | null;
+  }>> {
+    const result = await this.pool.query(
+      `SELECT
+        site_id, workstation_id, window_id, staff_name,
+        status, status_text, current_url,
+        is_process_alive, is_cdp_ready, is_dashboard_ready, is_login_page,
+        last_heartbeat_at, updated_at, last_error
+      FROM window_status
+      WHERE tenant_id = $1 AND site_id = $2
+      ORDER BY updated_at DESC`,
+      [tenantId, siteId]
+    );
+    return result.rows.map(r => ({
+      siteId: r.site_id,
+      workstationId: r.workstation_id,
+      windowId: r.window_id,
+      staffName: r.staff_name,
+      status: r.status,
+      statusText: r.status_text,
+      currentUrl: r.current_url,
+      isProcessAlive: r.is_process_alive,
+      isCdpReady: r.is_cdp_ready,
+      isDashboardReady: r.is_dashboard_ready,
+      isLoginPage: r.is_login_page,
+      lastHeartbeatAt: r.last_heartbeat_at ? new Date(r.last_heartbeat_at).toISOString() : '',
+      updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : '',
+      lastError: r.last_error,
+    }));
+  }
 }

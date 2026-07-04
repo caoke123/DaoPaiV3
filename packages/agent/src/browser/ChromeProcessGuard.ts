@@ -1,7 +1,7 @@
 /**
  * ChromeProcessGuard — Chrome 进程守卫
  *
- * Phase 5-C-5 追加修复：进程级确认关闭策略。
+ * Phase D-0B: 移除硬编码路径，改为从 config 动态读取。
  *
  * 职责：
  *   1. 检查 debugPort 是否被占用
@@ -12,6 +12,7 @@
  */
 
 import { execSync } from 'child_process';
+import { getConfig } from '../config';
 
 export interface PortCheckResult {
   occupied: boolean;
@@ -28,8 +29,16 @@ export interface V3ChromeProcess {
   commandLine: string;
 }
 
-const EXPECTED_CHROME_PATH = 'E:/网站开发/DaoPaiV3/Chrome/App/chrome.exe';
-const EXPECTED_USER_DATA_DIR = 'E:/网站开发/DaoPaiV3/runtime/chrome-profile';
+// D-0B: Paths now read from agent config, no longer hardcoded
+// See config.ts getConfig().browser.executablePath / userDataDir
+
+function getExpectedChromePath(): string {
+  return getConfig().browser.executablePath.replace(/\\/g, '/');
+}
+
+function getExpectedUserDataDir(): string {
+  return getConfig().browser.userDataDir.replace(/\\/g, '/');
+}
 
 // ══════════════════════════════════════════════════════════
 // 端口检查
@@ -121,13 +130,13 @@ function getProcessInfo(pid: number): ProcessInfo {
 
 function isV3ChromeProcess(info: ProcessInfo): boolean {
   const normalizedPath = info.executablePath.replace(/\\/g, '/');
-  const expectedPath = EXPECTED_CHROME_PATH.replace(/\\/g, '/');
+  const expectedPath = getExpectedChromePath();
 
   if (normalizedPath !== expectedPath) {
     return false;
   }
 
-  if (!info.commandLine.includes(EXPECTED_USER_DATA_DIR)) {
+  if (!info.commandLine.includes(getExpectedUserDataDir())) {
     return false;
   }
 
@@ -184,7 +193,7 @@ export async function waitForProcessExit(pid: number, timeoutMs: number): Promis
  * 扫描所有 commandLine 包含 V3 userDataDir 的 chrome.exe 进程
  */
 export function findV3ChromeProcesses(userDataDir?: string): V3ChromeProcess[] {
-  const targetDir = (userDataDir || EXPECTED_USER_DATA_DIR).replace(/\\/g, '/');
+  const targetDir = (userDataDir || getExpectedUserDataDir()).replace(/\\/g, '/');
   const results: V3ChromeProcess[] = [];
 
   try {
@@ -212,7 +221,7 @@ export function findV3ChromeProcesses(userDataDir?: string): V3ChromeProcess[] {
     for (const p of processes) {
       const execPath = (p.ExecutablePath || '').replace(/\\/g, '/');
       const cmdLine = p.CommandLine || '';
-      const expectedPath = EXPECTED_CHROME_PATH.replace(/\\/g, '/');
+      const expectedPath = getExpectedChromePath();
 
       // 必须是项目内 Chrome
       if (execPath !== expectedPath) continue;

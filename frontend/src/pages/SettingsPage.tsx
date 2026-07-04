@@ -29,7 +29,7 @@ interface WindowEntry {
   username: string;
   /** 明文密码（state 中存明文，API 编码由后端处理）；Phase 4-B 允许为空 */
   password: string;
-  /** EasyBR 浏览器 ID（Phase 4-B: UI 不展示，保留数据兼容） */
+  /** 浏览器 ID（D-0B: UI 不展示，保留数据兼容） */
   easybrBrowserId: string;
   /** 唯一 key，用于 React key + 密码可见性追踪 */
   _key: string;
@@ -719,7 +719,7 @@ export default function SettingsPage() {
 
     try {
       // 将编辑数据转为 API 格式（不含 _key）
-      // Phase 4-B: windowName 自动生成 = 网点名-员工姓名；easybrBrowserId 保留旧值
+      // D-0B: windowName 自动生成 = 网点名-员工姓名；browserId 保留旧值
       const config: SiteConfig[] = sites.map((s) => ({
         id: s.id,
         name: s.name,

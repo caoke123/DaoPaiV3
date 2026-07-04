@@ -43,7 +43,6 @@ import { getRuntimeMode, shouldUsePlaywrightAdapter } from '../../config/runtime
 import { taskLogManager } from '../../utils/TaskLogManager';
 import { taskEventBus } from '../../utils/TaskEventBus';
 import { RuntimeMetrics } from '../../runtime/RuntimeMetrics';
-import { EasyBRClient } from '../../easybr/EasyBRClient';
 import { WindowAdapterRegistry } from '../../window-adapter/WindowAdapterRegistry';
 import type { WindowAdapterOptions } from '../../window-adapter/types';
 import { DEFAULT_TENANT_ID, buildRuntimeKey } from '../../playwright-runtime/types';
@@ -463,32 +462,7 @@ export class AssignmentEngine {
       });
       console.log(`[Engine] ${runtimeModeMsg}`);
 
-      // Phase G-2: 启动任务前必须执行 EasyBR 健康检测
-        // Playwright staff windows do not depend on the legacy EasyBR health check.
-      if (!usePlaywrightForSign) {
-        const eb = EasyBRClient.getInstance();
-        const health = await eb.checkHealth();
-        if (!health.ok) {
-          taskLogManager.addLog(taskId, 'error', `EasyBR 健康检测失败，任务终止: ${health.message}`, 'Engine');
-          pgLogBuffer.push({
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            taskId, timestamp: Date.now(), level: 'error',
-            message: `EasyBR 健康检测失败，任务终止: ${health.message}`,
-            source: 'Engine',
-          });
-          throw new Error(`EasyBR 健康检测失败: ${health.message}`);
-        }
-        taskLogManager.addLog(taskId, 'info', `EasyBR 健康检测通过: ${health.message}`, 'Engine');
-      } else {
-          const skipEasyBrMessage = `跳过 EasyBR 健康检测（playwright 模式 + ${taskType} 任务）`;
-          taskLogManager.addLog(taskId, 'info', skipEasyBrMessage, 'Engine');
-          pgLogBuffer.push({
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            taskId, timestamp: Date.now(), level: 'info',
-            message: skipEasyBrMessage,
-            source: 'Engine',
-          });
-      }
+      // D-0B: EasyBR health check removed — all tasks now use V3 Playwright runtime mode
 
       // Phase 8.2: 旧兼容模式 — waybillNos 自动选择 Worker（统一进入 Engine 生命周期）
       if (assignments.length === 0 && waybillNos && waybillNos.length > 0) {
@@ -721,7 +695,7 @@ export class AssignmentEngine {
           throw raceErr;
         }
 
-        // 其他异常（如 EasyBR 健康检测失败）
+        // 其他异常
         throw raceErr;
       } finally {
         if (idleTimerId) clearInterval(idleTimerId);
@@ -1127,7 +1101,7 @@ export class AssignmentEngine {
     return {
       page: conn.page,
       windowId: conn.windowId,
-      runtimeMode: 'legacy_easybr',
+      runtimeMode: 'playwright',
       release: async () => {
         try {
           lease.release();
@@ -1485,7 +1459,7 @@ export class AssignmentEngine {
     const onlineWorkers = pool.getOnlineWorkers(site);
 
     if (onlineWorkers.length === 0) {
-      throw new Error(`站点 ${site} 没有可用的 Worker 窗口，请确认 EasyBR 已开启该站点员工窗口并 P0 就绪`);
+      throw new Error(`站点 ${site} 没有可用的 Worker 窗口，请确认窗口已启动并 P0 就绪`);
     }
     const workerWin = onlineWorkers[0];
     return {

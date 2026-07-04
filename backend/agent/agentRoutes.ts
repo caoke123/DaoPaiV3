@@ -471,6 +471,87 @@ agentRouter.post('/tasks/:id/fail', async (req: Request, res: Response) => {
   }
 });
 
+// ── Phase Deploy-0C: Agent 窗口状态上报 ──
+
+/**
+ * POST /agent/windows/status — Agent 上报本机窗口状态
+ *
+ * 每个窗口 (tenantId + siteId + workstationId + windowId) 唯一定位。
+ * upsert 到 PostgreSQL window_status 表。
+ * 失败不影响任务执行，后端只打 warn。
+ */
+agentRouter.post('/windows/status', async (req: Request, res: Response) => {
+  try {
+    const { tenantId, workstationId } = getAgentPrincipal(req);
+    const body = req.body;
+
+    if (!body || typeof body !== 'object' || !Array.isArray(body.siteWindows)) {
+      return res.status(400).json({
+        ok: false,
+        message: '请传入 { siteWindows: [...] } 数组',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const windows: any[] = body.siteWindows;
+    if (windows.length === 0) {
+      return res.json({
+        ok: true,
+        data: { upserted: 0 },
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    if (windows.length > 50) {
+      return res.status(400).json({
+        ok: false,
+        code: 'BATCH_TOO_LARGE',
+        message: '一次最多上报 50 个窗口状态',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const pg = PgDatabase.getInstance();
+
+    for (const w of windows) {
+      if (!w.siteId || !w.windowId) {
+        console.warn('[POST /agent/windows/status] 跳过缺少 siteId/windowId 的条目');
+        continue;
+      }
+
+      await pg.upsertWindowStatus({
+        tenantId,
+        siteId: String(w.siteId),
+        workstationId: String(workstationId),
+        windowId: String(w.windowId),
+        staffName: String(w.staffName || w.windowId),
+        status: String(w.status || 'offline'),
+        statusText: String(w.statusText || ''),
+        currentUrl: w.currentUrl ? String(w.currentUrl) : undefined,
+        isProcessAlive: Boolean(w.isProcessAlive),
+        isCdpReady: Boolean(w.isCdpReady),
+        isDashboardReady: Boolean(w.isDashboardReady),
+        isLoginPage: Boolean(w.isLoginPage),
+        lastError: w.lastError ? String(w.lastError) : null,
+        cdpEndpoint: w.cdpEndpoint ? String(w.cdpEndpoint) : null,
+        profilePath: w.profilePath ? String(w.profilePath) : null,
+        chromePid: typeof w.chromePid === 'number' ? w.chromePid : null,
+      });
+    }
+
+    res.json({
+      ok: true,
+      data: { upserted: windows.length },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (e: any) {
+    if (e.status) return res.status(e.status).json({ ok: false, code: e.code, message: e.message, timestamp: new Date().toISOString() });
+    // 状态上报失败不影响业务，只打 warn
+    console.warn('[POST /agent/windows/status] 失败（非致命）:', e.message);
+    res.status(500).json({ ok: false, code: 'UNKNOWN_ERROR', message: '状态保存失败', timestamp: new Date().toISOString() });
+  }
+});
+
 // ── Phase K-3A: Agent CDP 接管 READY 窗口查询接口 ──
 
 /**

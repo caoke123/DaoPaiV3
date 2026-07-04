@@ -362,16 +362,6 @@ export async function getTaskLogs(taskId: string, limit = 500): Promise<TaskLogE
   return data.logs || [];
 }
 
-/** 切换窗口开关状态（已开→关闭，已关→打开并自动登录） */
-export async function toggleWindow(browerid: string): Promise<{ isConnected: boolean }> {
-  const resp = await fetchWithAuth(`${BASE}/windows/${browerid}/toggle`, { method: 'POST' });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ error: '请求失败' }));
-    throw new Error(err.error || `HTTP ${resp.status}`);
-  }
-  return resp.json();
-}
-
 /** Phase 4-D: 关闭 Playwright 窗口（不删除配置） */
 export async function closePlaywrightWindow(siteId: string, staffName: string): Promise<{ success: boolean; alreadyClosed?: boolean; status?: string }> {
   const resp = await fetchWithAuth(`${BASE}/sites/${siteId}/playwright-windows/close`, {
@@ -414,7 +404,6 @@ export interface TaskStatsResponse {
     pending: number;
   };
   system: {
-    easybrConnected: boolean;
     onlineWindows: number;
     activeWorkers: number;
     runningTasks: number;
@@ -803,19 +792,6 @@ export interface SiteWindowsResponse {
   siteId: string;
   siteName: string;
   windows: SiteWindowState[];
-  /** EasyBR 状态接口健康（熔断器 + openedList 异常监控） */
-  easybrHealth?: {
-    openedListAbnormal: boolean;
-    anomalyDurationMs: number;
-    /** 熔断器是否打开（连续失败5次后熔断5分钟） */
-    circuitBreakerOpen: boolean;
-    /** 熔断剩余时间（毫秒） */
-    circuitBreakerRemainingMs: number;
-    /** 是否需要提示用户重连（熔断中 或 openedList 异常超过30s） */
-    reconnectNeeded: boolean;
-    /** 状态描述文字 */
-    message: string;
-  };
 }
 
 export async function getSiteWindows(siteId: string): Promise<SiteWindowsResponse> {
@@ -965,35 +941,6 @@ export async function ensurePlaywrightWindow(siteId: string, staffName: string):
   return resp.json();
 }
 
-// ── EasyBR 浏览器控制 API ──
-
-/** POST /api/easybr/open-browser — 打开/聚焦浏览器窗口 */
-export async function openBrowser(browserId: string): Promise<{ ok: boolean; ws: string; http: string }> {
-  const resp = await fetchWithAuth(`${BASE}/easybr/open-browser`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ browserId }),
-  });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}));
-    throw new Error(err.message || err.error || `HTTP ${resp.status}`);
-  }
-  return resp.json();
-}
-
-/** POST /api/easybr/reconnect — 手动重连 EasyBR（清除熔断器/缓存/异常状态） */
-export async function reconnectEasyBR(): Promise<{ ok: boolean; message: string }> {
-  const resp = await fetchWithAuth(`${BASE}/easybr/reconnect`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-  });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ error: '请求失败' }));
-    throw new Error(err.error || `HTTP ${resp.status}`);
-  }
-  return resp.json();
-}
-
 // ── 运行模式 API（Phase 9-dryrun） ──
 
 /** 运行模式类型 */
@@ -1029,6 +976,37 @@ export async function updateRuntimeMode(dryRunMode: boolean): Promise<RuntimeMod
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ dryRunMode }),
   });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ error: '请求失败' }));
+    throw new Error(err.error || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
+// ── Deploy-0C: Cloud 窗口状态查询 ──
+
+/** Cloud 窗口状态（来自 Agent 上报的持久化数据） */
+export interface CloudWindowStatus {
+  siteId: string;
+  workstationId: string;
+  windowId: string;
+  staffName: string;
+  status: string;
+  statusText: string;
+  currentUrl?: string;
+  isProcessAlive: boolean;
+  isCdpReady: boolean;
+  isDashboardReady: boolean;
+  isLoginPage: boolean;
+  lastHeartbeatAt: string;
+  updatedAt: string;
+  stale: boolean;
+  lastError?: string | null;
+}
+
+/** GET /api/cloud/windows/status — 查询 Agent 上报的持久化窗口状态 */
+export async function getCloudWindowStatus(siteId: string): Promise<{ windows: CloudWindowStatus[] }> {
+  const resp = await fetchWithAuth(`${BASE}/cloud/windows/status?siteId=${encodeURIComponent(siteId)}`);
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ error: '请求失败' }));
     throw new Error(err.error || `HTTP ${resp.status}`);

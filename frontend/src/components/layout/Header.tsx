@@ -1,20 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Loader2, ChevronDown, RotateCw, X, RefreshCw, AlertTriangle, Monitor, LogOut, Trash2,
+  Loader2, ChevronDown, RotateCw, X, AlertTriangle, LogOut, Trash2,
 } from 'lucide-react';
 import { useAuth } from '../../stores/authStore';
 import {
-  initWindow,
   launchAllWindows,
   launchAllPlaywrightWindows,
   ensurePlaywrightWindow,
   getTaskProgress,
-  openBrowser,
-  toggleWindow,
   closePlaywrightWindow,
-  reconnectEasyBR,
   resetAllTasks,
-  type SiteWindowState,
   type PlaywrightSiteWindowState,
 } from '../../api/client';
 import { useWindowState } from '../shared/WindowStateProvider';
@@ -32,7 +27,6 @@ import {
 // Phase 4-I-2: 统一 close 事务（clearRuntimeStateForClose）
 // Phase 4-I-3: initializingTasks key 改用 getWindowKey(siteId, employeeName)
 //             单窗口/一键启动/close 清理/TTL 清理统一使用 windowKey
-// legacy_easybr 模式：保留原 GET /api/sites/:siteId/windows + EasyBR 启动逻辑
 
 interface HeaderProps {
   sidebarCollapsed?: boolean;
@@ -44,7 +38,7 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
   // ── 统一状态（来自 WindowStateProvider） ──
   const {
     sites, activeSiteId, setActiveSiteId,
-    siteWindows, siteName, easybrAbnormal, easybrMessage,
+    siteWindows, siteName,
     browserRuntimeStatus, browserRuntimeError,
     refresh: fetchSiteWindows,
     configError,
@@ -65,7 +59,6 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
   const [initializingTasks, setInitializingTasks] = useState<Map<string, string>>(new Map());
   const [launching, setLaunching] = useState(false);
   const [launchMsg, setLaunchMsg] = useState('');
-  const [reconnecting, setReconnecting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   // Phase K-3A-2-Prep: 任务重置
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -120,12 +113,12 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
 
   // ── Phase 4-I-3: 统一 windowKey 与 mark/clear 辅助函数 ──
   //   单窗口启动 / 一键启动 / close 清理 都调用同一组函数，避免 key 不一致
-  const getWindowKeyForSw = useCallback((sw: SiteWindowState): string => {
+  const getWindowKeyForSw = useCallback((sw: PlaywrightSiteWindowState): string => {
     const staffName = sw.employeeName || sw.windowName;
     return getWindowKey(activeSiteId, staffName);
   }, [activeSiteId]);
 
-  const markInitializing = useCallback((sw: SiteWindowState, marker: string) => {
+  const markInitializing = useCallback((sw: PlaywrightSiteWindowState, marker: string) => {
     const key = getWindowKeyForSw(sw);
     setInitializingTasks(prev => {
       if (prev.get(key) === marker) return prev;
@@ -135,7 +128,7 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
     });
   }, [getWindowKeyForSw]);
 
-  const clearInitializing = useCallback((sw: SiteWindowState) => {
+  const clearInitializing = useCallback((sw: PlaywrightSiteWindowState) => {
     const key = getWindowKeyForSw(sw);
     setInitializingTasks(prev => {
       if (!prev.has(key)) return prev;
@@ -258,7 +251,7 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
   //   优先级：busy > 后端终态 > initializing（仅过渡态）> connecting > offline
   //   ready 经 isPlaywrightReallyReady 守卫降级
   // Phase 4-I-3: initializingTasks key 已统一为 getWindowKey(siteId, employeeName)
-  const getEffectiveStatus = (w: SiteWindowState): DisplayStatus => {
+  const getEffectiveStatus = (w: PlaywrightSiteWindowState): DisplayStatus => {
     return getWindowDisplayStatus(w, {
       isPlaywright,
       isInitializing: initializingTasks.has(getWindowKeyForSw(w)),
@@ -266,7 +259,7 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
   };
 
   // ── 单点初始化窗口 ──
-  const handleInitWindow = async (sw: SiteWindowState) => {
+  const handleInitWindow = async (sw: PlaywrightSiteWindowState) => {
     const staffName = sw.employeeName || sw.windowName;
 
     // playwright 模式：走 adapter.ensureWindowReady（headed=true, keepOpen=true）
@@ -293,20 +286,8 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
       return;
     }
 
-    // legacy 模式：原 EasyBR initWindow 流程
-    if (!sw.browserId) {
-      setLaunchMsg(`窗口 ${staffName} 未匹配到浏览器配置，请先在设置中添加对应窗口`);
-      return;
-    }
-    markInitializing(sw, '');
-    try {
-      const res = await initWindow(activeSiteId, sw.browserId);
-      markInitializing(sw, res.taskId);
-    } catch (e) {
-      console.error(`初始化窗口 ${sw.windowName} 失败:`, e);
-      clearInitializing(sw);
-      setLaunchMsg(`窗口 ${sw.employeeName} 启动失败: ${(e as Error).message}`);
-    }
+    // EasyBR legacy mode has been removed in DaoPai V3
+    setLaunchMsg('EasyBR legacy mode has been removed in DaoPai V3, please switch to Playwright mode');
   };
 
   // ── 一键启动 ──
@@ -389,38 +370,15 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
     }
   };
 
-  // ── 手动重连 EasyBR ──
-  const handleReconnectEasyBR = async () => {
-    if (reconnecting) return;
-    setReconnecting(true);
-    setLaunchMsg('');
-    try {
-      const res = await reconnectEasyBR();
-      if (res.ok) {
-        setLaunchMsg('EasyBR 重连成功');
-      } else {
-        setLaunchMsg(`EasyBR 重连失败: ${res.message}`);
-      }
-      fetchSiteWindows();
-    } catch (e) {
-      const msg = (e as Error).message || '请求失败';
-      setLaunchMsg(`重连失败: ${msg}`);
-      console.error('[Header] EasyBR 重连失败:', e);
-    } finally {
-      setReconnecting(false);
-    }
-  };
-
   // ── 关闭窗口 — Phase 4-I-2 close 事务 + Phase 4-I-3 统一 windowKey ──
-  const handleCloseWindow = async (sw: SiteWindowState, e: React.MouseEvent) => {
+  const handleCloseWindow = async (sw: PlaywrightSiteWindowState, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
       if (isPlaywright) {
         const staffName = sw.employeeName || sw.windowName;
         await closePlaywrightWindow(activeSiteId, staffName);
       } else {
-        if (!sw.browserId) return;
-        await toggleWindow(sw.browserId);
+        // EasyBR legacy mode removed — skip
       }
       // Phase 4-I-3: 使用统一 clearInitializing（windowKey）清理标记
       clearInitializing(sw);
@@ -532,8 +490,8 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
           const fullLabel = `${displaySiteName} - ${displayName}`;
           const isOffline = effectiveStatus === 'offline';
           const isInitializing = effectiveStatus === 'initializing';
-          // Phase 4-D: playwright 模式检查 runtimeKey，EasyBR 模式检查 browserId
-          const hasBrowserId = isPlaywright ? !!(sw as PlaywrightSiteWindowState).runtimeKey : !!sw.browserId;
+          // Phase 4-D: playwright 模式检查 runtimeKey
+          const hasBrowserId = isPlaywright && !!(sw as PlaywrightSiteWindowState).runtimeKey;
 
           return (
             <span
@@ -550,12 +508,7 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
                   handleInitWindow(sw);
                   return;
                 }
-                if (isOffline) {
-                  handleInitWindow(sw);
-                } else if (hasBrowserId) {
-                  // legacy 模式：通过 EasyBR 打开/聚焦窗口
-                  openBrowser(sw.browserId!).catch(e => console.error('[Header] 打开窗口失败:', e));
-                }
+                // EasyBR legacy mode removed — clicking does nothing for offline windows
               }}
               title={`${fullLabel}\n状态：${getWindowStatusLabel(effectiveStatus)}${
                 effectiveStatus === 'failed'
@@ -656,30 +609,6 @@ export default function Header({ sidebarCollapsed }: HeaderProps) {
               </button>
             )}
 
-          </div>
-        )}
-
-        {/* legacy_easybr 模式：运行时状态异常提示 + 手动重连按钮 */}
-        {!isPlaywright && easybrAbnormal && (
-          <div className="flex items-center gap-1.5 shrink-0" title={easybrMessage}>
-            <AlertTriangle className="w-3 h-3 text-warning" />
-            <span className="text-[11px] text-warning font-medium">运行时连接异常</span>
-            <button
-              onClick={handleReconnectEasyBR}
-              disabled={reconnecting}
-              className="flex items-center gap-1 px-1.5 py-0.5 rounded-[4px] text-[10px] font-medium
-                bg-warning/10 text-warning border border-warning/30
-                hover:bg-warning/20 transition-colors
-                disabled:opacity-50 disabled:cursor-not-allowed"
-              title={`${easybrMessage || '运行时连接异常'}，重启本地执行端后点击此按钮立即重连`}
-            >
-              {reconnecting ? (
-                <Loader2 className="w-2.5 h-2.5 animate-spin" />
-              ) : (
-                <RefreshCw className="w-2.5 h-2.5" />
-              )}
-              <span>重连</span>
-            </button>
           </div>
         )}
 

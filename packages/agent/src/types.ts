@@ -90,3 +90,30 @@ export interface AgentErrorResponse {
   message: string;
   timestamp: string;
 }
+
+// ══════════════════════════════════════════════════════════
+// Phase Deploy-0C: Agent 窗口状态上报
+// ══════════════════════════════════════════════════════════
+
+/** Agent 上报的单个窗口状态 */
+export interface WindowStatusReportEntry {
+  siteId: string;
+  windowId: string;
+  staffName: string;
+  status: 'offline' | 'starting' | 'login_required' | 'logging_in' | 'ready' | 'busy' | 'error';
+  statusText: string;
+  currentUrl?: string;
+  isProcessAlive: boolean;
+  isCdpReady: boolean;
+  isDashboardReady: boolean;
+  isLoginPage: boolean;
+  lastError?: string | null;
+  cdpEndpoint?: string | null;
+  profilePath?: string | null;
+  chromePid?: number | null;
+}
+
+/** Agent 窗口状态上报请求体 */
+export interface WindowStatusReportBody {
+  siteWindows: WindowStatusReportEntry[];
+}

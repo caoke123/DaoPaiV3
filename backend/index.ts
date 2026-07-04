@@ -45,7 +45,6 @@ import { PgDatabase } from './db/PgDatabase';
 import { runMigrations } from './db/migrations';
 import { SettingsManager } from './config/SettingsManager';
 import { AssignmentEngine } from './modules/assignment-engine/AssignmentEngine';
-import { EasyBRClient } from './easybr/EasyBRClient';
 import { router } from './api/routes';
 import { requestContext } from './api/middleware/requestContext';
 import { authMiddleware, requireUserIfAuthRequired } from './auth';
@@ -359,7 +358,7 @@ async function main(): Promise<void> {
     })();
   });
 
-  // Phase 3-D-2: 初始化 BrowserPool（best-effort，不阻塞 Express 启动）
+  // D-0B: BrowserPool 初始化（best-effort，不阻塞 Express 启动）
   // 失败时 runtimeStatus 标记为 unavailable，Express 仍正常服务 Auth / 任务中心
   console.log('[启动] 初始化 BrowserPool（best-effort）...');
   let pool: BrowserPool;

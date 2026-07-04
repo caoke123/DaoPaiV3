@@ -11,6 +11,21 @@ import type { AgentConfig, BrowserConfig, BnsyConfig } from './types';
 const CONFIG_FILE = path.resolve(__dirname, '..', 'agent.json');
 const CONFIG_EXAMPLE = path.resolve(__dirname, '..', 'agent.example.json');
 
+/** D-0B: Local root directory for DaoPai local runtime */
+export function getLocalRoot(): string {
+  return process.env.DAOPAI_LOCAL_ROOT || path.resolve(__dirname, '..', '..', '..');
+}
+
+/** D-0B: Export the loaded config for use by other modules (e.g. ChromeProcessGuard) */
+let _cachedConfig: AgentConfig | null = null;
+
+export function getConfig(): AgentConfig {
+  if (!_cachedConfig) {
+    _cachedConfig = loadConfig();
+  }
+  return _cachedConfig;
+}
+
 /** 默认配置 */
 const DEFAULTS: Partial<AgentConfig> = {
   logLevel: 'info',
@@ -77,6 +92,7 @@ export function loadConfig(): AgentConfig {
     taskPollIntervalMs: validatePositiveInt(raw.taskPollIntervalMs ?? raw.pollIntervalMs, DEFAULTS.taskPollIntervalMs!, '任务轮询间隔'),
   };
 
+  _cachedConfig = config;
   return config;
 }
 
@@ -115,20 +131,24 @@ function loadBrowserConfig(raw: unknown): BrowserConfig {
   const executablePath = (b.executablePath as string) || '';
   if (!executablePath) {
     console.error('错误：缺少 browser.executablePath，请检查 agent.json');
-    console.error('示例：E:/网站开发/DaoPaiV3/Chrome/App/chrome.exe');
+    console.error('示例：chrome/chrome.exe');
     process.exit(1);
   }
 
   const userDataDir = (b.userDataDir as string) || '';
   if (!userDataDir) {
     console.error('错误：缺少 browser.userDataDir，请检查 agent.json');
-    console.error('示例：E:/网站开发/DaoPaiV3/runtime/chrome-profile');
+    console.error('示例：profiles/default');
     process.exit(1);
   }
 
+  // D-0B: resolve relative paths against local root
+  const localRoot = process.env.DAOPAI_LOCAL_ROOT || path.resolve(__dirname, '..', '..', '..');
+  const resolvePath = (p: string) => path.isAbsolute(p) ? p : path.resolve(localRoot, p);
+
   return {
-    executablePath,
-    userDataDir,
+    executablePath: resolvePath(executablePath),
+    userDataDir: resolvePath(userDataDir),
     debugPort: typeof b.debugPort === 'number' && b.debugPort > 0 ? b.debugPort : defaults.debugPort,
     headless: typeof b.headless === 'boolean' ? b.headless : defaults.headless,
   };
