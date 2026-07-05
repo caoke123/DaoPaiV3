@@ -91,6 +91,8 @@ export interface IntegratedBrowserDryRunInput {
     courierName?: string;
     /** 派件员员工编号（用于弹窗表格精确匹配） */
     courierEmployeeId?: string;
+    /** 是否试运行模式 */
+    browserDryRun?: boolean;
   };
   /** Phase K-2E: Agent 运行时日志函数（可选） */
   log?: AgentRuntimeLogFn;
@@ -107,7 +109,13 @@ export interface IntegratedBrowserDryRunResult {
   integratedCheckboxChecked: boolean;
   courierSelected: boolean;
   clickedButton: 'none' | 'search';
-  finalSubmitClicked: false;
+  finalSubmitClicked: boolean;
+  uploadClicked?: boolean;
+  confirmDialogShown?: boolean;
+  confirmClicked?: boolean;
+  submitMessage?: string | null;
+  submitResultDetected?: boolean;
+  blockedReason?: string;
   detectBefore: IntegratedPageDetectResult | null;
   detectAfter: IntegratedPageDetectResult | null;
   message: string;
@@ -653,16 +661,81 @@ export async function runIntegratedBrowserDryRun(
   const detectAfter = await detectIntegratedPage(page);
   result.detectAfter = detectAfter;
 
-  // 11. 明确 finalSubmitClicked = false
+  // 11. 真实生产模式新增动作
   result.finalSubmitClicked = false;
   result.clickedButton = 'none';
-  console.log(`  [Integrated-DRY-RUN] [Agent][Integrated] finalSubmitClicked=false`);
-  log?.('info', '[Agent][Integrated][safety] DRY_RUN=true finalSubmitClicked=false', meta);
+  
+  const browserDryRun = options?.browserDryRun ?? true;
+  const enableRealSubmit = process.env.ENABLE_REAL_SUBMIT === 'true';
+
+  if (browserDryRun) {
+    console.log(`  [Integrated-DRY-RUN] [Agent][Integrated] finalSubmitClicked=false`);
+    log?.('info', '[Agent][Integrated][safety] DRY_RUN=true finalSubmitClicked=false', meta);
+    result.validationLogs.push('当前为试运行模式，不点击上传');
+    result.validationLogs.push('已阻止最终提交');
+  } else {
+    // 真实生产模式
+    if (!enableRealSubmit) {
+      result.blockedReason = 'ENABLE_REAL_SUBMIT 未开启';
+      result.validationLogs.push(`已阻止真实提交：${result.blockedReason}`);
+      log?.('warning', `[Agent][Integrated][safety] 已阻止真实提交：${result.blockedReason}`, meta);
+    } else if (waybillAfterTotal === null || waybillAfterTotal <= 0) {
+      result.blockedReason = '页面列表总条数为 0';
+      result.validationLogs.push(`已阻止真实提交：${result.blockedReason}`);
+      log?.('warning', `[Agent][Integrated][safety] 已阻止真实提交：${result.blockedReason}`, meta);
+    } else {
+      log?.('info', `[Agent][Integrated] 真实生产模式已开启，准备点击上传`, meta);
+      
+      const uploadResult = await clickIntegratedUploadButton(page, log, meta);
+      if (!uploadResult.success) {
+        result.blockedReason = uploadResult.reason || '上传按钮点击失败';
+        result.validationLogs.push(`已阻止真实提交：${result.blockedReason}`);
+        log?.('warning', `[Agent][Integrated][safety] 已阻止真实提交：${result.blockedReason}`, meta);
+      } else {
+        result.uploadClicked = true;
+        result.clickedButton = 'search'; // Or keep it none/search depending on original semantics. Reusing field.
+        log?.('info', `[Agent][Integrated] 已点击上传按钮，等待确认弹窗`, meta);
+        
+        const confirmDialogResult = await waitForIntegratedConfirmDialog(page, log, meta);
+        if (!confirmDialogResult.success) {
+          result.blockedReason = confirmDialogResult.reason || '确认弹窗验证失败';
+          result.validationLogs.push(`已阻止真实提交：${result.blockedReason}`);
+          log?.('warning', `[Agent][Integrated][safety] 已阻止真实提交：${result.blockedReason}`, meta);
+        } else {
+          result.confirmDialogShown = true;
+          log?.('info', `[Agent][Integrated] 已检测到确认弹窗：是否确认提交？`, meta);
+          
+          const confirmClickResult = await clickIntegratedConfirmButton(page, log, meta);
+          if (!confirmClickResult.success) {
+            result.blockedReason = confirmClickResult.reason || '确认按钮点击失败';
+            result.validationLogs.push(`已阻止真实提交：${result.blockedReason}`);
+            log?.('warning', `[Agent][Integrated][safety] 已阻止真实提交：${result.blockedReason}`, meta);
+          } else {
+            result.confirmClicked = true;
+            result.finalSubmitClicked = true;
+            log?.('info', `[Agent][Integrated] 已点击确认按钮，等待页面稳定`, meta);
+            
+            await page.waitForTimeout(2000);
+            
+            const submitMessage = await tryReadIntegratedSubmitMessage(page);
+            if (submitMessage) {
+              result.submitMessage = submitMessage;
+              result.submitResultDetected = true;
+            }
+            
+            log?.('info', `[Agent][Integrated] 最终确认点击已完成`, meta);
+          }
+        }
+      }
+    }
+  }
 
   // 12. 结果
   const successWbCount = addWaybillResults.filter(r => r.result === 'success').length;
   result.success = true;
-  result.message = `到派一体 DRY-RUN 完成：attempted=${waybills.length}，页面实际接收=${waybillActualAdded ?? '?'}，pageTotal=${waybillAfterTotal ?? '?'}，未点击上传按钮`;
+  result.message = browserDryRun 
+    ? `到派一体 DRY-RUN 完成：attempted=${waybills.length}，页面实际接收=${waybillActualAdded ?? '?'}，pageTotal=${waybillAfterTotal ?? '?'}，未点击上传按钮`
+    : `到派一体真实提交尝试完成：finalSubmitClicked=${result.finalSubmitClicked}，attempted=${waybills.length}，pageTotal=${waybillAfterTotal ?? '?'}`;
 
   console.log(`  [Integrated-DRY-RUN] ${result.message}`);
   return result;
@@ -1772,6 +1845,116 @@ async function clickAddButtonStable(
 // ══════════════════════════════════════════════════════════
 // Phase I-4: 读取右侧分页真实总条数
 // ══════════════════════════════════════════════════════════
+
+async function clickIntegratedUploadButton(page: Page, log?: AgentRuntimeLogFn, meta?: AgentRuntimeMeta): Promise<{ success: boolean, reason?: string }> {
+  try {
+    const uploadBtnLoc = page.locator(INTEGRATED_SCAN_SELECTORS.uploadButton).first();
+    const fallbackSelector = '#app > div.app-wrapper.openSidebar > div.main-container.hasTagsView > section > div > div.arrivalscan_right > div > button.el-button.el-button--success.el-button--medium > span';
+    
+    let btn = uploadBtnLoc;
+    if (await btn.count().catch(() => 0) === 0) {
+      btn = page.locator(fallbackSelector).first();
+    }
+    
+    if (await btn.count().catch(() => 0) === 0) {
+      btn = page.locator('button:has-text("上传")').first();
+    }
+    
+    if (await btn.count().catch(() => 0) === 0) {
+      return { success: false, reason: '未找到上传按钮' };
+    }
+    
+    const isVisible = await btn.isVisible().catch(() => false);
+    if (!isVisible) {
+      return { success: false, reason: '上传按钮不可见' };
+    }
+    
+    const isDisabled = await btn.evaluate((el) => {
+      const button = (el.tagName === 'SPAN' ? el.closest('button') : el) as HTMLButtonElement;
+      return button ? (button.disabled || button.classList.contains('is-disabled')) : false;
+    }).catch(() => true);
+    if (isDisabled) {
+      return { success: false, reason: '上传按钮不可点击' };
+    }
+    
+    const text = (await btn.textContent() || '').replace(/\s+/g, '');
+    if (!text.includes('上传')) {
+      return { success: false, reason: `按钮文本不匹配（${text}）` };
+    }
+
+    await btn.click({ timeout: 3000, force: true });
+    return { success: true };
+  } catch (err) {
+    return { success: false, reason: (err as Error).message };
+  }
+}
+
+async function waitForIntegratedConfirmDialog(page: Page, log?: AgentRuntimeLogFn, meta?: AgentRuntimeMeta): Promise<{ success: boolean, reason?: string }> {
+  try {
+    const wrapper = page.locator(INTEGRATED_SCAN_SELECTORS.confirmDialogWrapper).first();
+    
+    try {
+      await wrapper.waitFor({ state: 'visible', timeout: 5000 });
+    } catch {
+      return { success: false, reason: '确认弹窗未出现' };
+    }
+    
+    // wait a bit for animation and text rendering
+    await page.waitForTimeout(300);
+
+    const text = await wrapper.textContent().catch(() => '');
+    const normalizedText = (text || '').replace(/\s+/g, '');
+    if (!normalizedText.includes('是否确认提交？')) {
+      return { success: false, reason: `确认弹窗文案不匹配（实际文案: ${normalizedText.substring(0, 50)}...）` };
+    }
+
+    return { success: true };
+  } catch (err) {
+    return { success: false, reason: (err as Error).message };
+  }
+}
+
+async function clickIntegratedConfirmButton(page: Page, log?: AgentRuntimeLogFn, meta?: AgentRuntimeMeta): Promise<{ success: boolean, reason?: string }> {
+  try {
+    const wrapper = page.locator(INTEGRATED_SCAN_SELECTORS.confirmDialogWrapper).first();
+    
+    let btn = wrapper.locator('button:has-text("确定")').first();
+    
+    if (await btn.count().catch(() => 0) === 0) {
+      btn = wrapper.locator(INTEGRATED_SCAN_SELECTORS.confirmButton).first();
+    }
+    
+    if (await btn.count().catch(() => 0) === 0) {
+      btn = page.locator('body > div.el-message-box__wrapper > div > div.el-message-box__btns > button.el-button.el-button--default.el-button--small.el-button--primary').first();
+    }
+    
+    if (await btn.count().catch(() => 0) === 0) {
+      return { success: false, reason: '未找到弹窗确认按钮' };
+    }
+
+    await btn.click({ timeout: 3000, force: true });
+    return { success: true };
+  } catch (err) {
+    return { success: false, reason: (err as Error).message };
+  }
+}
+
+async function tryReadIntegratedSubmitMessage(page: Page): Promise<string | null> {
+  try {
+    return await page.evaluate(() => {
+      const msgs = Array.from(document.querySelectorAll('.el-message__content, .el-notification__content'));
+      for (const msg of msgs) {
+        const text = (msg.textContent || '').replace(/\s+/g, ' ').trim();
+        if (text && !text.includes('上一站') && !text.includes('不能为空')) {
+          return text;
+        }
+      }
+      return null;
+    });
+  } catch {
+    return null;
+  }
+}
 
 async function readIntegratedRightTotal(page: Page): Promise<number | null> {
   const selectors = [

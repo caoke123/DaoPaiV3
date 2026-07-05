@@ -37,6 +37,8 @@ export interface SignBrowserDryRunInput {
     pageSize?: 30 | 50 | 100 | 200;
     /** Phase K-Final-R1-Fix-B: 日期范围。未传则默认今天 00:00:00 ~ 23:59:59 */
     dateRange?: { start: string; end: string };
+    signerPerson?: string;
+    browserDryRun?: boolean;
   };
   /** Phase K-2E: Agent 运行时日志函数（可选） */
   log?: AgentRuntimeLogFn;
@@ -51,7 +53,14 @@ export interface SignBrowserDryRunResult {
   searched: boolean;
   pageSizeApplied: number | null;
   courierSelected: boolean;
-  finalSubmitClicked: false;
+  batchSignClicked?: boolean;
+  signDialogShown?: boolean;
+  signerSelected?: boolean;
+  confirmClicked?: boolean;
+  finalSubmitClicked: boolean;
+  submitMessage?: string | null;
+  submitResultDetected?: boolean;
+  blockedReason?: string;
   detectBefore: SignPageDetectResult | null;
   detectAfter: SignPageDetectResult | null;
   message: string;
@@ -77,6 +86,149 @@ function assertNotFinalSubmit(text: string): void {
 
 // 允许点击的按钮关键词（spec 白名单）
 const ALLOWED_BUTTON_KEYWORDS = ['查询', '搜索', '检索'];
+
+async function clickBatchSignButton(page: Page, log?: AgentRuntimeLogFn, meta?: AgentRuntimeMeta): Promise<{ success: boolean, reason?: string }> {
+  try {
+    const btn = page.locator(SIGN_SELECTORS.batchSignButton).first();
+    
+    if (await btn.count().catch(() => 0) === 0) {
+      return { success: false, reason: '未找到批量签收按钮' };
+    }
+    
+    const isVisible = await btn.isVisible().catch(() => false);
+    if (!isVisible) {
+      return { success: false, reason: '批量签收按钮不可见' };
+    }
+    
+    const isDisabled = await btn.evaluate((el) => {
+      const button = (el.tagName === 'SPAN' ? el.closest('button') : el) as HTMLButtonElement;
+      return button ? (button.disabled || button.classList.contains('is-disabled')) : false;
+    }).catch(() => true);
+    
+    if (isDisabled) {
+      return { success: false, reason: '批量签收按钮不可点击' };
+    }
+    
+    const text = (await btn.textContent() || '').replace(/\s+/g, '');
+    if (!text.includes('批量签收')) {
+      return { success: false, reason: `按钮文本不匹配（${text}）` };
+    }
+
+    await btn.click({ timeout: 3000, force: true });
+    return { success: true };
+  } catch (err) {
+    return { success: false, reason: (err as Error).message };
+  }
+}
+
+async function waitForSignDialog(page: Page, log?: AgentRuntimeLogFn, meta?: AgentRuntimeMeta): Promise<{ success: boolean, reason?: string }> {
+  try {
+    const dialogLoc = page.locator(SIGN_SELECTORS.signDialog).first();
+    
+    try {
+      await dialogLoc.waitFor({ state: 'visible', timeout: 5000 });
+    } catch {
+      return { success: false, reason: '签收弹窗未出现' };
+    }
+    
+    await page.waitForTimeout(300);
+    
+    const selectCount = await dialogLoc.locator(SIGN_SELECTORS.signerSelectInput).count().catch(() => 0);
+    if (selectCount === 0) {
+       return { success: false, reason: '弹窗内未找到签收人选择区域' };
+    }
+    
+    const confirmBtnCount = await dialogLoc.locator(SIGN_SELECTORS.dialogConfirmBtn).count().catch(() => 0);
+    if (confirmBtnCount === 0) {
+       return { success: false, reason: '弹窗内未找到确定按钮' };
+    }
+    
+    return { success: true };
+  } catch (err) {
+    return { success: false, reason: (err as Error).message };
+  }
+}
+
+async function selectSignerInDialog(page: Page, signer: string, log?: AgentRuntimeLogFn, meta?: AgentRuntimeMeta): Promise<{ success: boolean, reason?: string }> {
+  try {
+    const dialogLoc = page.locator(SIGN_SELECTORS.signDialog).first();
+    const inputLoc = dialogLoc.locator(SIGN_SELECTORS.signerSelectInput).first();
+    
+    await inputLoc.click({ timeout: 3000 });
+    await page.waitForTimeout(300);
+    
+    const clicked = await page.evaluate((name) => {
+      const items = document.querySelectorAll('body > div.el-select-dropdown.el-popper:not([style*="display: none"]) li.el-select-dropdown__item');
+      for (const item of items) {
+        if ((item.textContent || '').trim().includes(name)) {
+          (item as HTMLElement).click();
+          return true;
+        }
+      }
+      return false;
+    }, signer);
+    
+    if (!clicked) {
+      return { success: false, reason: `未找到签收人候选项: ${signer}` };
+    }
+    
+    return { success: true };
+  } catch (err) {
+    return { success: false, reason: (err as Error).message };
+  }
+}
+
+async function clickSignConfirmButton(page: Page, log?: AgentRuntimeLogFn, meta?: AgentRuntimeMeta): Promise<{ success: boolean, reason?: string }> {
+  try {
+    const dialogLoc = page.locator(SIGN_SELECTORS.signDialog).first();
+    const confirmBtn = dialogLoc.locator(SIGN_SELECTORS.dialogConfirmBtn).first();
+    
+    const isVisible = await confirmBtn.isVisible().catch(() => false);
+    if (!isVisible) {
+      return { success: false, reason: '确认按钮不可见' };
+    }
+    
+    const isDisabled = await confirmBtn.evaluate((el) => {
+      const button = (el.tagName === 'SPAN' ? el.closest('button') : el) as HTMLButtonElement;
+      return button ? (button.disabled || button.classList.contains('is-disabled')) : false;
+    }).catch(() => true);
+    
+    if (isDisabled) {
+      return { success: false, reason: '确认按钮不可点击' };
+    }
+    
+    await confirmBtn.click({ timeout: 3000, force: true });
+    return { success: true };
+  } catch (err) {
+    return { success: false, reason: (err as Error).message };
+  }
+}
+
+async function waitForSignPageStable(page: Page): Promise<void> {
+  try {
+    await page.waitForSelector(SIGN_SELECTORS.loadingMask, { state: 'hidden', timeout: 3000 }).catch(() => {});
+    await page.waitForTimeout(1000);
+  } catch {
+    await page.waitForTimeout(2000);
+  }
+}
+
+async function tryReadSignSubmitMessage(page: Page): Promise<string | null> {
+  try {
+    return await page.evaluate(() => {
+      const msgs = Array.from(document.querySelectorAll('.el-message__content, .el-notification__content'));
+      for (const msg of msgs) {
+        const text = (msg.textContent || '').replace(/\s+/g, ' ').trim();
+        if (text) {
+          return text;
+        }
+      }
+      return null;
+    });
+  } catch {
+    return null;
+  }
+}
 
 /**
  * 执行签收录入浏览器 DRY-RUN
@@ -299,12 +451,122 @@ export async function runSignBrowserDryRun(
 
   log?.('info', `[Agent][Sign] 搜索后: table=${detectAfter.hasTable} batchSignBtn=${detectAfter.hasBatchSignButton}`, meta);
 
-  // 8. 明确 finalSubmitClicked = false
+  // 8. 真实生产模式新增动作
   result.finalSubmitClicked = false;
+
+  const browserDryRun = input.options?.browserDryRun ?? true;
+  const enableRealSubmit = process.env.ENABLE_REAL_SUBMIT === 'true';
+
+  // 检测是否有列表数据
+  const hasData = await page.evaluate(() => {
+    const rows = document.querySelectorAll('.el-table__body-wrapper table tbody tr.el-table__row');
+    return rows.length > 0;
+  }).catch(() => false);
+
+  if (browserDryRun) {
+    console.log(`  [Sign-DRY-RUN] [Agent][Sign] finalSubmitClicked=false`);
+    log?.('info', '[Agent][Sign][safety] DRY_RUN=true finalSubmitClicked=false', meta);
+    result.validationLogs.push('当前为试运行模式，不点击签收确认');
+    result.validationLogs.push('已阻止最终提交');
+    
+    if (hasData && result.searched) {
+      log?.('info', '[Agent][Sign] 准备点击批量签收...', meta);
+      const batchResult = await clickBatchSignButton(page, log, meta);
+      if (batchResult.success) {
+        result.batchSignClicked = true;
+        log?.('info', '[Agent][Sign] 已点击批量签收，等待签收弹窗', meta);
+        const dialogResult = await waitForSignDialog(page, log, meta);
+        if (dialogResult.success) {
+          result.signDialogShown = true;
+          log?.('info', '[Agent][Sign] 已检测到签收弹窗', meta);
+          
+          const targetSigner = input.options?.signerPerson || '本人';
+          log?.('info', `[Agent][Sign] 准备选择签收人：${targetSigner}`, meta);
+          const signerResult = await selectSignerInDialog(page, targetSigner, log, meta);
+          if (signerResult.success) {
+             result.signerSelected = true;
+             log?.('info', `[Agent][Sign] 已选择签收人：${targetSigner}`, meta);
+          }
+        }
+      }
+    }
+  } else {
+    // 真实生产模式
+    if (!enableRealSubmit) {
+      result.blockedReason = 'ENABLE_REAL_SUBMIT 未开启';
+      result.validationLogs.push(`已阻止最终签收：${result.blockedReason}`);
+      log?.('warning', `[Agent][Sign][safety] 已阻止最终签收：${result.blockedReason}`, meta);
+    } else if (!result.searched) {
+      result.blockedReason = '未点击搜索';
+      result.validationLogs.push(`已阻止最终签收：${result.blockedReason}`);
+      log?.('warning', `[Agent][Sign][safety] 已阻止最终签收：${result.blockedReason}`, meta);
+    } else if (!hasData) {
+      result.blockedReason = '列表无数据';
+      result.validationLogs.push(`已阻止最终签收：${result.blockedReason}`);
+      log?.('warning', `[Agent][Sign][safety] 已阻止最终签收：${result.blockedReason}`, meta);
+    } else {
+      log?.('info', '[Agent][Sign] 当前为真实生产模式，准备执行签收...', meta);
+      
+      const batchResult = await clickBatchSignButton(page, log, meta);
+      if (!batchResult.success) {
+        result.blockedReason = batchResult.reason || '未找到批量签收按钮';
+        result.validationLogs.push(`已阻止最终签收：${result.blockedReason}`);
+        log?.('warning', `[Agent][Sign][safety] 已阻止最终签收：${result.blockedReason}`, meta);
+      } else {
+        result.batchSignClicked = true;
+        log?.('info', '[Agent][Sign] 已点击批量签收，等待签收弹窗', meta);
+        
+        const dialogResult = await waitForSignDialog(page, log, meta);
+        if (!dialogResult.success) {
+          result.blockedReason = dialogResult.reason || '签收弹窗未出现';
+          result.validationLogs.push(`已阻止最终签收：${result.blockedReason}`);
+          log?.('warning', `[Agent][Sign][safety] 已阻止最终签收：${result.blockedReason}`, meta);
+        } else {
+          result.signDialogShown = true;
+          log?.('info', '[Agent][Sign] 已检测到签收弹窗', meta);
+          
+          const targetSigner = input.options?.signerPerson || '本人';
+          const signerResult = await selectSignerInDialog(page, targetSigner, log, meta);
+          if (!signerResult.success) {
+            result.blockedReason = signerResult.reason || '签收人选择失败';
+            result.validationLogs.push(`已阻止最终签收：${result.blockedReason}`);
+            log?.('warning', `[Agent][Sign][safety] 已阻止最终签收：${result.blockedReason}`, meta);
+          } else {
+            result.signerSelected = true;
+            log?.('info', `[Agent][Sign] 已选择签收人：${targetSigner}`, meta);
+            log?.('info', '[Agent][Sign] 当前为真实生产模式，准备点击确认', meta);
+            
+            const confirmResult = await clickSignConfirmButton(page, log, meta);
+            if (!confirmResult.success) {
+              result.blockedReason = confirmResult.reason || '确认按钮不可点击';
+              result.validationLogs.push(`已阻止最终签收：${result.blockedReason}`);
+              log?.('warning', `[Agent][Sign][safety] 已阻止最终签收：${result.blockedReason}`, meta);
+            } else {
+              result.confirmClicked = true;
+              result.finalSubmitClicked = true;
+              log?.('info', '[Agent][Sign] 已点击签收确认按钮，等待页面稳定', meta);
+              
+              await waitForSignPageStable(page);
+              
+              const submitMessage = await tryReadSignSubmitMessage(page);
+              if (submitMessage) {
+                result.submitMessage = submitMessage;
+                result.submitResultDetected = true;
+              }
+              
+              log?.('info', '[Agent][Sign] 最终确认点击已完成', meta);
+            }
+          }
+        }
+      }
+    }
+  }
 
   // 9. 结果
   result.success = true;
-  result.message = '签收录入 DRY-RUN 完成：已点击搜索按钮，未点击批量签收按钮，未点击签收弹窗确认按钮';
+  result.message = browserDryRun
+    ? '签收录入 DRY-RUN 完成：已执行到选择签收人，未点击签收弹窗确认按钮'
+    : `签收录入真实提交尝试完成：finalSubmitClicked=${result.finalSubmitClicked}`;
 
   log?.('success', `[Agent][Sign] ${result.message}`, meta);
   return result;

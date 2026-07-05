@@ -272,7 +272,7 @@ function makeAssignmentSummary(
     total: assignment.waybillNos.length,
     successCount,
     failedCount,
-    finalSubmitClicked: false,
+    finalSubmitClicked: extra.finalSubmitClicked ?? false,
     ...extra,
   };
 }
@@ -564,9 +564,7 @@ async function executeOneIntegratedAssignment(
     if (dryRunResult.courierSelected) logger.info(`[Agent][Integrated] 派件员选择完成：${assignment.targetCourierName}`, meta);
     logger.info('[Agent][Integrated] 已执行到最终提交前', meta);
     if (browserDryRun === false && process.env.ENABLE_REAL_SUBMIT !== 'true') {
-      logger.warning('[Agent][Integrated][安全门] 跳过最终提交', meta);
-    } else {
-      logger.info('[Agent][Integrated] dry-run 跳过最终提交', meta);
+      logger.warning('[Agent][Integrated][安全门] ENABLE_REAL_SUBMIT 未开启，已在浏览器脚本中拦截提交', meta);
     }
 
     if (!dryRunResult.success) {
@@ -578,17 +576,23 @@ async function executeOneIntegratedAssignment(
       await afterPageChangedCleanup(page, log, meta, 'integrated-before-done');
     }
 
-    logger.success('[Agent][Integrated] 到派一体浏览器 DRY-RUN 完成，未点击最终提交', meta);
+    if (dryRunResult.finalSubmitClicked) {
+      logger.success('[Agent][Integrated] 真实提交尝试完成', meta);
+    } else {
+      logger.success('[Agent][Integrated] 到派一体浏览器 DRY-RUN 完成，未点击最终提交', meta);
+    }
     logger.info('[Agent][Integrated] READY 窗口任务完成，浏览器保持运行（由 Backend 管理）', meta);
     await logger.flush();
 
-    const status = browserDryRun ? 'dry_run' : 'SAFETY_GATE_SKIPPED';
+    const status = dryRunResult.finalSubmitClicked ? 'success' : (browserDryRun ? 'dry_run' : 'SAFETY_GATE_SKIPPED');
     const results = assignment.waybillNos.map(waybillNo => ({
       waybillNo,
       staffName: assignment.executionStaffName,
       windowId: meta.windowId,
       status,
-      message: `执行窗口=${assignment.executionStaffName}，目标派件员=${assignment.targetCourierName}，未提交到派一体`,
+      message: dryRunResult.finalSubmitClicked 
+        ? `执行窗口=${assignment.executionStaffName}，目标派件员=${assignment.targetCourierName}，已执行最终提交`
+        : `执行窗口=${assignment.executionStaffName}，目标派件员=${assignment.targetCourierName}，未提交到派一体`,
     }));
 
     logger.success('[Agent][Integrated] assignment 本地执行完成', meta);
@@ -607,9 +611,13 @@ async function executeOneIntegratedAssignment(
         integratedCheckboxChecked: dryRunResult.integratedCheckboxChecked,
         courierSelected: dryRunResult.courierSelected,
         pageUrl: dryRunResult.pageUrl,
-        message: browserDryRun
-          ? '到派一体浏览器 DRY-RUN 完成（READY 窗口接管），未点击最终提交'
-          : '到派一体已执行到最终提交前，ENABLE_REAL_SUBMIT 未开启，已跳过最终提交',
+        finalSubmitClicked: dryRunResult.finalSubmitClicked,
+        uploadClicked: dryRunResult.uploadClicked,
+        confirmDialogShown: dryRunResult.confirmDialogShown,
+        confirmClicked: dryRunResult.confirmClicked,
+        submitMessage: dryRunResult.submitMessage,
+        blockedReason: dryRunResult.blockedReason,
+        message: dryRunResult.message,
       }),
       results,
       successCount: results.length,
@@ -728,7 +736,7 @@ export async function executeIntegratedDryRun(
 
     await reportProgress(client, taskId, 'running', 95);
     const summary = {
-      mode: browserDryRun ? 'browserDryRun' : 'realSubmitBlockedBySafetyGate',
+      mode: browserDryRun ? 'browserDryRun' : 'realSubmitAttempted',
       assignmentCount: assignments.length,
       successAssignments,
       failedAssignments,
@@ -737,9 +745,9 @@ export async function executeIntegratedDryRun(
       successCount,
       failedCount,
       assignments: assignmentSummaries,
-      finalSubmitClicked: false,
+      finalSubmitClicked: assignmentSummaries.some(a => (a as any).finalSubmitClicked === true),
       message: failedCount === 0
-        ? '到派一体所有 assignments 执行完成（READY 窗口接管），未点击最终提交'
+        ? '到派一体所有 assignments 执行完成（READY 窗口接管）'
         : `到派一体完成：成功 ${successCount} 条，失败 ${failedCount} 条`,
     };
 
